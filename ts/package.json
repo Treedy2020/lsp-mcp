@@ -11,16 +11,14 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc",
-    "prepublishOnly": "npm run build",
-    "start": "node dist/index.js",
-    "start:bun": "bun dist/index.js",
-    "dev": "tsc --watch",
-    "test:pyright": "node test/test-pyright-direct.mjs",
-    "test:mcp": "node test/test-mcp.mjs",
-    "test:pyright:bun": "bun test/test-pyright-direct.mjs",
-    "test:mcp:bun": "bun test/test-mcp.mjs",
-    "inspector": "npx @modelcontextprotocol/inspector node dist/index.js"
+    "build": "bun run build.ts",
+    "build:tsc": "tsc",
+    "prepublishOnly": "bun run build",
+    "start": "bun dist/index.js",
+    "dev": "bun --watch src/index.ts",
+    "test:pyright": "bun test/test-pyright-direct.mjs",
+    "test:mcp": "bun test/test-mcp.mjs",
+    "inspector": "bunx @modelcontextprotocol/inspector bun dist/index.js"
   },
   "keywords": [
     "mcp",
