@@ -1,0 +1,55 @@
+{
+  "name": "@treedy/pyright-mcp",
+  "version": "1.1.2",
+  "description": "MCP server exposing Pyright LSP features for Python code intelligence",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "pyright-mcp": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build",
+    "start": "node dist/index.js",
+    "start:bun": "bun dist/index.js",
+    "dev": "tsc --watch",
+    "test:pyright": "node test/test-pyright-direct.mjs",
+    "test:mcp": "node test/test-mcp.mjs",
+    "test:pyright:bun": "bun test/test-pyright-direct.mjs",
+    "test:mcp:bun": "bun test/test-mcp.mjs",
+    "inspector": "npx @modelcontextprotocol/inspector node dist/index.js"
+  },
+  "keywords": [
+    "mcp",
+    "pyright",
+    "python",
+    "lsp",
+    "language-server",
+    "claude",
+    "ai",
+    "code-intelligence",
+    "type-checking"
+  ],
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "vscode-jsonrpc": "^8.2.0",
+    "vscode-languageserver-protocol": "^3.17.5",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0"
+  }
+}
