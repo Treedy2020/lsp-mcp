@@ -11,6 +11,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import * as path from "path";
 import * as fs from "fs";
+import { createRequire } from "module";
 
 import {
   findProjectRoot,
@@ -33,10 +34,14 @@ import {
   applyFileChanges,
 } from "./ts-service.js";
 
+// Read version from package.json
+const require = createRequire(import.meta.url);
+const packageJson = require("../package.json");
+
 // Create MCP server
 const server = new McpServer({
   name: "typescript-lsp-mcp",
-  version: "0.1.0",
+  version: packageJson.version,
 });
 
 // ============================================================================

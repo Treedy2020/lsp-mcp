@@ -14,6 +14,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { createRequire } from "module";
 
 import { loadConfig, type PythonProvider } from "./config.js";
 import { BackendManager } from "./backend-manager.js";
@@ -36,6 +37,10 @@ import {
 } from "./tools/meta.js";
 import { registerPrompts } from "./prompts.js";
 
+// Read version from package.json
+const require = createRequire(import.meta.url);
+const packageJson = require("../package.json");
+
 // Load configuration
 const config = loadConfig();
 
@@ -45,7 +50,7 @@ const backendManager = new BackendManager(config);
 // Create MCP server
 const server = new McpServer({
   name: "lsp-mcp",
-  version: "0.1.0",
+  version: packageJson.version,
 });
 
 // ============================================================================

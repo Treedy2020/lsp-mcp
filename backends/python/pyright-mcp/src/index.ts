@@ -2,6 +2,7 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { createRequire } from 'module';
 
 import { hover, hoverSchema } from './tools/hover.js';
 import { definition, definitionSchema } from './tools/definition.js';
@@ -16,9 +17,13 @@ import { symbols, symbolsSchema } from './tools/symbols.js';
 import { updateDocument, updateDocumentSchema } from './tools/update-document.js';
 import { getLspClient, shutdownLspClient } from './lsp-client.js';
 
+// Read version from package.json
+const require = createRequire(import.meta.url);
+const packageJson = require('../package.json');
+
 const server = new McpServer({
   name: 'pyright-mcp',
-  version: '1.0.0',
+  version: packageJson.version,
 });
 
 // Register hover tool

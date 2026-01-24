@@ -5,9 +5,16 @@ import json
 import os
 import sys
 import threading
+from importlib.metadata import version as pkg_version
 from typing import Literal, Optional
 
 from mcp.server.fastmcp import FastMCP
+
+# Get package version at runtime
+try:
+    __version__ = pkg_version("python-lsp-mcp")
+except Exception:
+    __version__ = "0.3.0"  # Fallback
 
 from .config import (
     Backend,
@@ -33,7 +40,7 @@ from .tools import (
 )
 
 # Create the MCP server
-mcp = FastMCP("Rope MCP Server")
+mcp = FastMCP("python-lsp-mcp", version=__version__)
 
 # Register cleanup on exit
 atexit.register(close_all_clients)
@@ -588,8 +595,8 @@ def status() -> str:
         project_python_paths[project] = rope_client.get_python_path(project)
 
     status_info = {
-        "server": "Python LSP MCP Server",
-        "version": "0.1.0",
+        "server": "python-lsp-mcp",
+        "version": __version__,
         "backends": {
             "rope": {
                 "available": True,
