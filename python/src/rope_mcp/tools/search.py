@@ -61,7 +61,9 @@ def get_search(
 
         # rg returns 2 when there are errors but may still have results
         # We should still try to parse any results we got
-        if result.returncode not in (0, 1, 2) or (result.returncode != 0 and not result.stdout.strip()):
+        if result.returncode not in (0, 1, 2) or (
+            result.returncode != 0 and not result.stdout.strip()
+        ):
             return {
                 "error": f"ripgrep error: {result.stderr}",
                 "pattern": pattern,
@@ -88,13 +90,15 @@ def get_search(
                     for submatch in match_data.get("submatches", []):
                         if len(results) >= max_results:
                             break
-                        results.append({
-                            "file": os.path.abspath(file_path),
-                            "line": line_number,
-                            "column": submatch["start"] + 1,  # Convert to 1-based
-                            "text": line_text,
-                            "match": submatch["match"]["text"],
-                        })
+                        results.append(
+                            {
+                                "file": os.path.abspath(file_path),
+                                "line": line_number,
+                                "column": submatch["start"] + 1,  # Convert to 1-based
+                                "text": line_text,
+                                "match": submatch["match"]["text"],
+                            }
+                        )
             except (json.JSONDecodeError, KeyError):
                 # Skip non-JSON or malformed lines
                 continue

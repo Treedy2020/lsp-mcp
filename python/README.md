@@ -12,6 +12,9 @@ Python MCP server providing code analysis features using [Rope](https://github.c
 | `completions` | Code completion suggestions | Rope/Pyright |
 | `symbols` | Extract document symbols | Rope/Pyright |
 | `rename` | Rename refactoring | Rope |
+| `move` | Move function/class to another module | Rope |
+| `change_signature` | Change function parameters | Rope |
+| `function_signature` | Get function signature info | Rope |
 | `diagnostics` | Type checking errors | Pyright |
 | `signature_help` | Function signatures | Pyright |
 | `update_document` | Incremental document updates | Pyright |
@@ -129,8 +132,19 @@ Configure backends at startup via environment variables (supports both prefixes)
 | `PYTHON_LSP_MCP_REFERENCES_BACKEND` | Backend for references | inherited |
 | `PYTHON_LSP_MCP_COMPLETIONS_BACKEND` | Backend for completions | inherited |
 | `PYTHON_LSP_MCP_SYMBOLS_BACKEND` | Backend for symbols | inherited |
+| `PYTHON_LSP_MCP_NO_CACHE` | Disable Rope caching (`1` or `true`) | `false` |
 
 > Note: `ROPE_MCP_*` prefix is also supported for backward compatibility.
+
+### Rope Caching
+
+By default, Rope creates a `.ropeproject` folder in each analyzed project to cache analysis results. This significantly improves performance for medium to large projects.
+
+- **Cache location**: `.ropeproject/` in each project root (project-isolated)
+- **Cache contents**: Module info, object database, refactoring history
+- **Disable caching**: Set `PYTHON_LSP_MCP_NO_CACHE=1`
+
+You may want to add `.ropeproject/` to your `.gitignore`.
 
 Example:
 ```bash

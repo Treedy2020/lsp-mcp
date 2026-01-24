@@ -3,12 +3,16 @@
 import os
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Optional, cast
 
 import rope.base.project
-from rope.base.resources import Resource
+from rope.base.resources import File
 
 from .config import get_python_path_for_workspace
+
+# Environment variable to disable Rope caching (creates .ropeproject in each project)
+# Set to "1" or "true" to disable caching
+DISABLE_CACHE = os.environ.get("PYTHON_LSP_MCP_NO_CACHE", "").lower() in ("1", "true")
 
 
 def _get_site_packages(python_executable: str) -> list[str]:
@@ -22,7 +26,11 @@ def _get_site_packages(python_executable: str) -> list[str]:
     """
     try:
         result = subprocess.run(
-            [python_executable, "-c", "import site; print('\\n'.join(site.getsitepackages()))"],
+            [
+                python_executable,
+                "-c",
+                "import site; print('\\n'.join(site.getsitepackages()))",
+            ],
             capture_output=True,
             text=True,
             timeout=5,
@@ -57,9 +65,11 @@ class RopeClient:
                 del self._projects[workspace]
 
         if workspace not in self._projects:
+            # ropefolder=None disables caching, default ".ropeproject" enables it
+            ropefolder = None if DISABLE_CACHE else ".ropeproject"
             project = rope.base.project.Project(
                 workspace,
-                ropefolder=None,  # Don't create .ropeproject folder
+                ropefolder=ropefolder,  # type: ignore[arg-type]
             )
 
             # Get site-packages from the Python interpreter and add to python_path
@@ -79,9 +89,7 @@ class RopeClient:
             workspace, get_python_path_for_workspace(workspace)
         )
 
-    def get_resource(
-        self, project: rope.base.project.Project, file_path: str
-    ) -> Resource:
+    def get_resource(self, project: rope.base.project.Project, file_path: str) -> File:
         """Get a Rope resource for a file path."""
         abs_path = os.path.abspath(file_path)
         project_root = project.root.real_path
@@ -91,7 +99,7 @@ class RopeClient:
         else:
             rel_path = abs_path
 
-        return project.get_resource(rel_path)
+        return cast(File, project.get_resource(rel_path))
 
     def position_to_offset(self, source: str, line: int, column: int) -> int:
         """Convert (line, column) to byte offset.
@@ -172,6 +180,9 @@ class RopeClient:
         return {
             "active_projects": list(self._projects.keys()),
             "project_count": len(self._projects),
+            "project_python_paths": dict(self._project_python_paths),
+            "caching_enabled": not DISABLE_CACHE,
+            "cache_folder": ".ropeproject" if not DISABLE_CACHE else None,
         }
 
 

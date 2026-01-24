@@ -11,6 +11,9 @@ from rope_mcp.tools import (
     get_completions,
     get_symbols,
     do_rename,
+    do_move,
+    do_change_signature,
+    get_function_signature,
     get_search,
 )
 from rope_mcp.rope_client import RopeClient
@@ -223,3 +226,84 @@ class TestSearch:
 
         assert "error" not in result
         assert result["count"] == 0
+
+
+class TestFunctionSignature:
+    """Tests for function_signature tool."""
+
+    def test_get_function_signature(self, sample_python_file):
+        """Test getting function signature."""
+        # Get signature of 'add' method (line 11)
+        result = get_function_signature(sample_python_file, 11, 9)
+
+        if "error" not in result:
+            assert "params" in result
+            assert "param_names" in result
+            # Should have self and x
+            assert "self" in result["param_names"]
+            assert "x" in result["param_names"]
+
+
+class TestChangeSignature:
+    """Tests for change_signature tool."""
+
+    def test_change_signature_add_param(self):
+        """Test adding a parameter to a function."""
+        content = '''def greet(name):
+    return f"Hello, {name}!"
+
+result = greet("World")
+'''
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", delete=False
+        ) as f:
+            f.write(content)
+            f.flush()
+            temp_file = f.name
+
+        try:
+            # Add 'greeting' param with default 'Hello'
+            result = do_change_signature(
+                temp_file,
+                1,
+                5,
+                add_param={"name": "greeting", "default": '"Hello"'},
+            )
+
+            if "error" not in result:
+                assert result["success"] is True
+
+                # Verify the file was changed
+                with open(temp_file) as f:
+                    new_content = f.read()
+                assert "greeting" in new_content
+        finally:
+            os.unlink(temp_file)
+
+    def test_change_signature_remove_param(self):
+        """Test removing a parameter from a function."""
+        content = '''def greet(name, greeting):
+    return f"{greeting}, {name}!"
+
+result = greet("World", "Hi")
+'''
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", delete=False
+        ) as f:
+            f.write(content)
+            f.flush()
+            temp_file = f.name
+
+        try:
+            result = do_change_signature(
+                temp_file,
+                1,
+                5,
+                remove_param="greeting",
+            )
+
+            if "error" not in result:
+                assert result["success"] is True
+                assert "changed_files" in result
+        finally:
+            os.unlink(temp_file)

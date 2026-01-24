@@ -3,6 +3,7 @@
 from rope.refactor.rename import Rename
 
 from ..rope_client import get_client
+from ..lsp import refresh_lsp_documents
 
 
 def do_rename(file: str, line: int, column: int, new_name: str) -> dict:
@@ -39,6 +40,9 @@ def do_rename(file: str, line: int, column: int, new_name: str) -> dict:
 
         # Apply the changes
         project.do(changes)
+
+        # Refresh LSP documents so Pyright picks up the changes
+        refresh_lsp_documents(changed_files)
 
         return {
             "success": True,

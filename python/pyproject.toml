@@ -1,6 +1,6 @@
 [project]
 name = "python-lsp-mcp"
-version = "0.2.0"
+version = "0.3.0"
 description = "MCP server providing Python code analysis using Rope and Pyright"
 readme = "README.md"
 license = "MIT"
@@ -35,6 +35,14 @@ classifiers = [
 dependencies = [
     "mcp>=1.0.0",
     "rope>=1.13.0",
+    "tomli>=2.0.0; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "watchdog>=4.0.0",
+    "pytest>=8.0.0",
+    "ruff>=0.4.0",
 ]
 
 [project.urls]

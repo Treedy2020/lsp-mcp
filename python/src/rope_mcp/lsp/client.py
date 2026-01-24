@@ -3,16 +3,12 @@
 import json
 import os
 import subprocess
+import sys
 import threading
-import time
 from pathlib import Path
 from typing import Any, Optional
-import sys
 
 from .types import DocumentState
-
-# Time to wait after opening a document before it's ready for analysis
-DOCUMENT_READY_DELAY = 0.5  # 500ms, same as TypeScript version
 
 
 class LspClient:
@@ -107,7 +103,9 @@ class LspClient:
         self._process.stdin.write(header.encode() + content.encode())
         self._process.stdin.flush()
 
-    def _send_request(self, method: str, params: Any = None, timeout: float = 30.0) -> Any:
+    def _send_request(
+        self, method: str, params: Any = None, timeout: float = 30.0
+    ) -> Any:
         """Send a request and wait for response."""
         with self._lock:
             self._request_id += 1
@@ -178,7 +176,10 @@ class LspClient:
                 # Note: Do NOT include workspace.workspaceFolders here
             },
             "workspaceFolders": [
-                {"uri": self._path_to_uri(self.workspace_root), "name": Path(self.workspace_root).name}
+                {
+                    "uri": self._path_to_uri(self.workspace_root),
+                    "name": Path(self.workspace_root).name,
+                }
             ],
         }
 
@@ -251,9 +252,6 @@ class LspClient:
             },
         )
 
-        # Wait for analysis to complete (like TypeScript version)
-        time.sleep(DOCUMENT_READY_DELAY)
-
     def update_document(self, file_path: str, content: str) -> None:
         """Update document content (incremental)."""
         self.initialize()
@@ -288,6 +286,32 @@ class LspClient:
         )
         del self._documents[uri]
 
+    def refresh_document(self, file_path: str) -> None:
+        """Refresh a document after external modification.
+
+        If the document is already open, sends didChange with new content.
+        Otherwise, opens it fresh when needed later.
+        """
+        if not os.path.exists(file_path):
+            # File was deleted, close if open
+            uri = self._path_to_uri(file_path)
+            if uri in self._documents:
+                self.close_document(file_path)
+            return
+
+        uri = self._path_to_uri(file_path)
+        if uri in self._documents:
+            # Document is open - read new content and send didChange
+            with open(file_path, "r", encoding="utf-8") as f:
+                new_content = f.read()
+            self.update_document(file_path, new_content)
+        # If not open, it will be opened fresh when needed
+
+    def refresh_documents(self, file_paths: list[str]) -> None:
+        """Refresh multiple documents after external modification."""
+        for file_path in file_paths:
+            self.refresh_document(file_path)
+
     def hover(self, file_path: str, line: int, column: int) -> Optional[dict]:
         """Get hover information at position."""
         self.open_document(file_path)
@@ -310,7 +334,11 @@ class LspClient:
         elif isinstance(contents, str):
             return {"contents": contents}
         elif isinstance(contents, list):
-            return {"contents": "\n".join(c.get("value", c) if isinstance(c, dict) else c for c in contents)}
+            return {
+                "contents": "\n".join(
+                    c.get("value", c) if isinstance(c, dict) else c for c in contents
+                )
+            }
         return None
 
     def definition(self, file_path: str, line: int, column: int) -> list[dict]:
@@ -334,14 +362,18 @@ class LspClient:
 
         locations = []
         for loc in result:
-            locations.append({
-                "file": self._uri_to_path(loc["uri"]),
-                "line": loc["range"]["start"]["line"] + 1,
-                "column": loc["range"]["start"]["character"] + 1,
-            })
+            locations.append(
+                {
+                    "file": self._uri_to_path(loc["uri"]),
+                    "line": loc["range"]["start"]["line"] + 1,
+                    "column": loc["range"]["start"]["character"] + 1,
+                }
+            )
         return locations
 
-    def references(self, file_path: str, line: int, column: int, include_declaration: bool = True) -> list[dict]:
+    def references(
+        self, file_path: str, line: int, column: int, include_declaration: bool = True
+    ) -> list[dict]:
         """Find all references."""
         self.open_document(file_path)
         uri = self._path_to_uri(file_path)
@@ -360,11 +392,13 @@ class LspClient:
 
         references = []
         for loc in result:
-            references.append({
-                "file": self._uri_to_path(loc["uri"]),
-                "line": loc["range"]["start"]["line"] + 1,
-                "column": loc["range"]["start"]["character"] + 1,
-            })
+            references.append(
+                {
+                    "file": self._uri_to_path(loc["uri"]),
+                    "line": loc["range"]["start"]["line"] + 1,
+                    "column": loc["range"]["start"]["character"] + 1,
+                }
+            )
         return references
 
     def completions(self, file_path: str, line: int, column: int) -> list[dict]:
@@ -387,12 +421,14 @@ class LspClient:
 
         completions = []
         for item in items:
-            completions.append({
-                "label": item.get("label", ""),
-                "kind": self._completion_kind_to_string(item.get("kind", 1)),
-                "detail": item.get("detail", ""),
-                "documentation": self._get_documentation(item.get("documentation")),
-            })
+            completions.append(
+                {
+                    "label": item.get("label", ""),
+                    "kind": self._completion_kind_to_string(item.get("kind", 1)),
+                    "detail": item.get("detail", ""),
+                    "documentation": self._get_documentation(item.get("documentation")),
+                }
+            )
         return completions
 
     def document_symbols(self, file_path: str) -> list[dict]:
@@ -432,7 +468,11 @@ class LspClient:
         if not signatures:
             return None
 
-        sig = signatures[active_signature] if active_signature < len(signatures) else signatures[0]
+        sig = (
+            signatures[active_signature]
+            if active_signature < len(signatures)
+            else signatures[0]
+        )
         return {
             "label": sig.get("label", ""),
             "documentation": self._get_documentation(sig.get("documentation")),
@@ -446,22 +486,29 @@ class LspClient:
             "active_parameter": result.get("activeParameter", 0),
         }
 
-    def _flatten_symbols(self, symbols: list, file_path: str, parent: str = "") -> list[dict]:
+    def _flatten_symbols(
+        self, symbols: list, file_path: str, parent: str = ""
+    ) -> list[dict]:
         """Flatten hierarchical symbols."""
         result = []
         for sym in symbols:
             name = sym.get("name", "")
             full_name = f"{parent}.{name}" if parent else name
-            result.append({
-                "name": name,
-                "kind": self._symbol_kind_to_string(sym.get("kind", 1)),
-                "line": sym.get("range", {}).get("start", {}).get("line", 0) + 1,
-                "column": sym.get("range", {}).get("start", {}).get("character", 0) + 1,
-                "file": file_path,
-            })
+            result.append(
+                {
+                    "name": name,
+                    "kind": self._symbol_kind_to_string(sym.get("kind", 1)),
+                    "line": sym.get("range", {}).get("start", {}).get("line", 0) + 1,
+                    "column": sym.get("range", {}).get("start", {}).get("character", 0)
+                    + 1,
+                    "file": file_path,
+                }
+            )
             # Recurse into children
             if "children" in sym:
-                result.extend(self._flatten_symbols(sym["children"], file_path, full_name))
+                result.extend(
+                    self._flatten_symbols(sym["children"], file_path, full_name)
+                )
         return result
 
     def _get_documentation(self, doc: Any) -> str:
@@ -477,12 +524,30 @@ class LspClient:
     def _completion_kind_to_string(self, kind: int) -> str:
         """Convert LSP CompletionItemKind to string."""
         kinds = {
-            1: "Text", 2: "Method", 3: "Function", 4: "Constructor",
-            5: "Field", 6: "Variable", 7: "Class", 8: "Interface",
-            9: "Module", 10: "Property", 11: "Unit", 12: "Value",
-            13: "Enum", 14: "Keyword", 15: "Snippet", 16: "Color",
-            17: "File", 18: "Reference", 19: "Folder", 20: "EnumMember",
-            21: "Constant", 22: "Struct", 23: "Event", 24: "Operator",
+            1: "Text",
+            2: "Method",
+            3: "Function",
+            4: "Constructor",
+            5: "Field",
+            6: "Variable",
+            7: "Class",
+            8: "Interface",
+            9: "Module",
+            10: "Property",
+            11: "Unit",
+            12: "Value",
+            13: "Enum",
+            14: "Keyword",
+            15: "Snippet",
+            16: "Color",
+            17: "File",
+            18: "Reference",
+            19: "Folder",
+            20: "EnumMember",
+            21: "Constant",
+            22: "Struct",
+            23: "Event",
+            24: "Operator",
             25: "TypeParameter",
         }
         return kinds.get(kind, "Text")
@@ -490,13 +555,32 @@ class LspClient:
     def _symbol_kind_to_string(self, kind: int) -> str:
         """Convert LSP SymbolKind to string."""
         kinds = {
-            1: "File", 2: "Module", 3: "Namespace", 4: "Package",
-            5: "Class", 6: "Method", 7: "Property", 8: "Field",
-            9: "Constructor", 10: "Enum", 11: "Interface", 12: "Function",
-            13: "Variable", 14: "Constant", 15: "String", 16: "Number",
-            17: "Boolean", 18: "Array", 19: "Object", 20: "Key",
-            21: "Null", 22: "EnumMember", 23: "Struct", 24: "Event",
-            25: "Operator", 26: "TypeParameter",
+            1: "File",
+            2: "Module",
+            3: "Namespace",
+            4: "Package",
+            5: "Class",
+            6: "Method",
+            7: "Property",
+            8: "Field",
+            9: "Constructor",
+            10: "Enum",
+            11: "Interface",
+            12: "Function",
+            13: "Variable",
+            14: "Constant",
+            15: "String",
+            16: "Number",
+            17: "Boolean",
+            18: "Array",
+            19: "Object",
+            20: "Key",
+            21: "Null",
+            22: "EnumMember",
+            23: "Struct",
+            24: "Event",
+            25: "Operator",
+            26: "TypeParameter",
         }
         return kinds.get(kind, "Variable")
 
@@ -524,3 +608,17 @@ def close_all_clients() -> None:
             except Exception:
                 pass
         _clients.clear()
+
+
+def refresh_lsp_documents(file_paths: list[str]) -> None:
+    """Refresh documents in all LSP clients after external modification.
+
+    This should be called after Rope refactoring operations that modify
+    files on disk, so that Pyright picks up the changes.
+    """
+    with _lock:
+        for client in _clients.values():
+            try:
+                client.refresh_documents(file_paths)
+            except Exception:
+                pass

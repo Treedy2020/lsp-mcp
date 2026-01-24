@@ -25,9 +25,7 @@ def get_definition(file: str, line: int, column: int) -> dict:
         source = resource.read()
         offset = client.position_to_offset(source, line, column)
 
-        location = codeassist.get_definition_location(
-            project, source, offset, resource
-        )
+        location = codeassist.get_definition_location(project, source, offset, resource)
 
         if location and location[0] is not None:
             def_resource, def_line = location

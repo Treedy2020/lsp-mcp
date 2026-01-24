@@ -96,16 +96,26 @@ class PyrightClient:
             # Format diagnostics
             diagnostics = []
             for diag in data.get("generalDiagnostics", []):
-                diagnostics.append({
-                    "file": diag.get("file", ""),
-                    "line": diag.get("range", {}).get("start", {}).get("line", 0) + 1,
-                    "column": diag.get("range", {}).get("start", {}).get("character", 0) + 1,
-                    "end_line": diag.get("range", {}).get("end", {}).get("line", 0) + 1,
-                    "end_column": diag.get("range", {}).get("end", {}).get("character", 0) + 1,
-                    "severity": diag.get("severity", "error"),
-                    "message": diag.get("message", ""),
-                    "rule": diag.get("rule", ""),
-                })
+                diagnostics.append(
+                    {
+                        "file": diag.get("file", ""),
+                        "line": diag.get("range", {}).get("start", {}).get("line", 0)
+                        + 1,
+                        "column": diag.get("range", {})
+                        .get("start", {})
+                        .get("character", 0)
+                        + 1,
+                        "end_line": diag.get("range", {}).get("end", {}).get("line", 0)
+                        + 1,
+                        "end_column": diag.get("range", {})
+                        .get("end", {})
+                        .get("character", 0)
+                        + 1,
+                        "severity": diag.get("severity", "error"),
+                        "message": diag.get("message", ""),
+                        "rule": diag.get("rule", ""),
+                    }
+                )
 
             summary = data.get("summary", {})
             return {

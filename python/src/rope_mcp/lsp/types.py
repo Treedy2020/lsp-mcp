@@ -1,7 +1,6 @@
 """LSP protocol types."""
 
 from dataclasses import dataclass
-from typing import Any, Optional
 
 
 @dataclass

@@ -9,9 +9,9 @@ from typing import Optional
 import os
 
 try:
-    import tomllib
+    import tomllib  # type: ignore[import-not-found]
 except ImportError:
-    import tomli as tomllib  # type: ignore
+    import tomli as tomllib  # type: ignore[import-not-found,import-untyped]
 
 
 class Backend(Enum):
@@ -54,6 +54,7 @@ class ServerConfig:
             *_COMPLETIONS_BACKEND: Backend for completions
             *_SYMBOLS_BACKEND: Backend for symbols
         """
+
         def get_env(suffix: str) -> Optional[str]:
             """Get environment variable with any prefix."""
             for prefix in ENV_PREFIXES:
@@ -63,7 +64,9 @@ class ServerConfig:
             return None
 
         default = get_env("BACKEND") or "rope"
-        default_backend = Backend(default) if default in ["rope", "pyright"] else Backend.ROPE
+        default_backend = (
+            Backend(default) if default in ["rope", "pyright"] else Backend.ROPE
+        )
 
         tool_backends = {}
         for tool in SHARED_TOOLS:
@@ -162,7 +165,9 @@ def find_pyright_python_path(workspace: str) -> Optional[str]:
             with open(pyproject, "rb") as f:
                 config = tomllib.load(f)
             pyright_config = config.get("tool", {}).get("pyright", {})
-            python_path = _extract_python_path_from_pyright(pyright_config, workspace_path)
+            python_path = _extract_python_path_from_pyright(
+                pyright_config, workspace_path
+            )
             if python_path:
                 return python_path
         except (tomllib.TOMLDecodeError, OSError):
@@ -284,9 +289,7 @@ _python_paths: dict[str, str] = {}
 _global_python_path: Optional[str] = None
 
 
-def set_python_path(
-    python_path: str, workspace: Optional[str] = None
-) -> dict:
+def set_python_path(python_path: str, workspace: Optional[str] = None) -> dict:
     """Set the Python interpreter path.
 
     Args:

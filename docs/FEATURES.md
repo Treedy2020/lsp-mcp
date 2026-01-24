@@ -20,6 +20,9 @@ This MCP server is designed for **LLM agents**, not human IDE users. This means:
 | completions | ✅ | ✅ | ✅ |
 | symbols | ✅ | ✅ | ✅ |
 | rename | ✅ | ✅ | - |
+| move | - | ✅ | - |
+| change_signature | - | ✅ | - |
+| function_signature | - | ✅ | - |
 | diagnostics | ✅ | - | ✅ |
 | signature_help | ✅ | - | ✅ |
 | search | ✅ | ✅ | - |
@@ -124,6 +127,10 @@ python-lsp-mcp automatically detects the Python interpreter:
 ### v0.1.0
 - Initial implementation
 - Basic MCP tools
+
+## Roadmap
+
+See [ROPE_REFACTORING.md](./ROPE_REFACTORING.md) for planned refactoring features.
 
 ## References
 

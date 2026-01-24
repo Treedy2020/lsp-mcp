@@ -36,9 +36,20 @@ Both backends provide correct results for typical operations. Choose based on yo
 |--------|------|---------|
 | **Cross-file references** | Good | Excellent |
 | **Type inference** | Basic | Full |
-| **Rename refactoring** | Excellent | Good |
+| **Rename refactoring** | Excellent (cross-file) | Good |
+| **Move refactoring** | ✅ Cross-file | N/A |
+| **Change signature** | ✅ Updates call sites | N/A |
 | **Diagnostics** | N/A | Full |
 | **Setup** | Zero config | Zero config |
+
+### Why Refactoring Tools Matter for LLMs
+
+LLMs struggle with:
+- **Updating imports across files** when moving code
+- **Updating all call sites** when changing function signatures
+- **Consistent renames** across a large codebase
+
+The Rope-only tools (move, change_signature, rename) handle these correctly and atomically, making them invaluable for AI-assisted refactoring.
 
 ## Recommendation
 
@@ -67,18 +78,51 @@ For reference, here are the raw performance numbers. Remember: these millisecond
 | Machine | Apple Silicon Mac |
 | Python | 3.13.5 |
 | Test file | ~60 lines Python |
+| Cross-file test | 5 modules, ~300 lines total |
 
-### Results
+### Core Tools Comparison
 
-| Tool | pyright-mcp (TS) | python-lsp-mcp (Rope) |
-|------|------------------|----------------------|
-| hover | 0.79 ms | 0.16 ms |
-| definition | 0.40 ms | 0.12 ms |
-| references | 8.11 ms | 14.20 ms |
-| completions | 1.52 ms | 0.36 ms |
-| symbols | 0.44 ms | 0.24 ms |
+| Tool | pyright-mcp (TS) | python-lsp-mcp (Rope) | python-lsp-mcp (Pyright) |
+|------|------------------|----------------------|--------------------------|
+| hover | 0.79 ms | 0.22 ms | 0.19 ms |
+| definition | 0.39 ms | 0.15 ms | 0.14 ms |
+| references | 7.85 ms | 19.70 ms | 19.37 ms |
+| completions | 1.28 ms | 0.39 ms | 0.38 ms |
+| symbols | 0.36 ms | 0.24 ms | 0.24 ms |
+| signature_help | 0.62 ms | 0.15 ms | N/A |
+| diagnostics | 347.49 ms | N/A | 266.60 ms |
 
-All operations complete well under 1 second, which is what matters for LLM use cases.
+### Rope-Only Tools
+
+These tools are only available in the Python implementation:
+
+| Tool | Mean | Notes |
+|------|------|-------|
+| search (ripgrep) | 5.99 ms | Fast file content search |
+| function_signature | 0.15 ms | Get function parameter info |
+| rename | N/A* | Cross-file symbol rename |
+| move | N/A* | Move function/class to another module |
+| change_signature | N/A* | Modify function parameters |
+
+\* Refactoring tools modify files, not benchmarked for safety
+
+### Cross-File Operations
+
+Cross-file operations are critical for LLMs understanding codebase relationships:
+
+| Operation | Rope Backend | Notes |
+|-----------|--------------|-------|
+| definition (cross-file) | 0.15 ms | Jump to definition in another module |
+| references (cross-file) | 37.66 ms | Find all usages across 5 modules |
+| hover (imported symbol) | 0.14 ms | Get docs for imported symbol |
+
+### Analysis
+
+- **All operations complete well under 1 second**, which is what matters for LLM use cases
+- **Python implementation is generally faster** for hover, definition, completions, and symbols
+- **TypeScript implementation has faster references** due to different index strategy
+- **Diagnostics are slow** in both implementations (~300ms) because they run full type checking
+- **Cross-file operations remain fast** thanks to Rope's project-level caching
 
 ## Running Benchmarks
 
