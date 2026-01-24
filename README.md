@@ -152,6 +152,25 @@ python-lsp-mcp supports two backends:
 }
 ```
 
+## Agent Skills & Rules
+
+The [skills/](./skills/) folder contains guidance for AI agents to use this MCP effectively:
+
+| Document | Description |
+|----------|-------------|
+| [code-navigation.md](./skills/code-navigation.md) | Navigate code with hover, definition, references |
+| [refactoring.md](./skills/refactoring.md) | Safe cross-file refactoring (rename, move, change_signature) |
+| [code-analysis.md](./skills/code-analysis.md) | Analyze code structure and find errors |
+| [rules.md](./skills/rules.md) | Best practices and anti-patterns |
+| [claude-code.md](./skills/claude-code.md) | Claude Code specific integration |
+
+### Key Rules for LLMs
+
+1. **Use LSP before reading files** - `hover()` is faster than reading entire files
+2. **Use refactoring tools for cross-file changes** - `rename()` beats manual search-replace
+3. **Verify after refactoring** - Always run `diagnostics()` to catch errors
+4. **Preview large changes** - Use `preview=True` before applying
+
 ## Architecture
 
 ### pyright-mcp (TypeScript)
