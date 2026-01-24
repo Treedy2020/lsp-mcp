@@ -1,6 +1,6 @@
-# Python LSP MCP Rules
+# LSP MCP Rules
 
-Best practices for agents using the python-lsp-mcp server.
+Best practices for agents using the lsp-mcp server (Python + TypeScript).
 
 ## Core Principles
 
@@ -13,7 +13,47 @@ BAD:  Read entire file to understand one variable's type
 
 LSP tools are faster and more precise than reading and parsing files manually.
 
-### 2. Use Refactoring Tools for Cross-File Changes
+### 2. Use Search to Get LSP-Ready Positions
+
+```
+GOOD: search("className") → get file:line:column → hover/definition/references
+BAD:  Manually calculate line numbers from file content
+```
+
+The `search()` tool returns positions (file, line, column) that can be directly used with other LSP tools. This is invaluable for:
+- Finding all occurrences of a pattern and getting their exact positions
+- Preparing inputs for batch LSP operations
+- Navigating large codebases efficiently
+
+### 3. Get Documentation Before Calling Methods
+
+```
+GOOD: hover()/signature_help() → understand params → write correct code
+BAD:  Guess method parameters and hope for the best
+```
+
+Before using unfamiliar APIs or methods:
+1. Use `hover()` to get type information and documentation
+2. Use `signature_help()` to see exact parameter signatures
+3. Then write code with confidence
+
+This prevents errors and reduces iteration cycles.
+
+### 4. Always Verify with Diagnostics After Changes
+
+```
+GOOD: Edit code → diagnostics() → fix issues → done
+BAD:  Edit code → assume it works
+```
+
+After any code modification:
+1. Run `diagnostics()` on affected files/directories
+2. Review and fix any type errors or warnings
+3. Repeat until clean
+
+This catches issues immediately rather than at test/runtime.
+
+### 5. Use Refactoring Tools for Cross-File Changes
 
 ```
 GOOD: rename() to rename across files
@@ -22,16 +62,7 @@ BAD:  Manually edit each file with search-replace
 
 Refactoring tools guarantee consistency. Manual edits risk missing usages.
 
-### 3. Verify After Refactoring
-
-```
-GOOD: rename() → diagnostics() → confirm no errors
-BAD:  rename() → assume it worked
-```
-
-Always run `diagnostics()` after refactoring to catch any issues.
-
-### 4. Preview Before Large Changes
+### 6. Preview Before Large Changes
 
 ```
 GOOD: move(preview=True) → confirm → move()
@@ -179,6 +210,48 @@ GOOD: diagnostics() once after all changes complete
    c. Fix the issue
 3. diagnostics(path) → verify all fixed
 ```
+
+### Template 5: Search-Driven LSP Operations
+
+```
+1. search("pattern") → get positions for all matches
+2. For each position (file, line, column):
+   a. hover() → get type info
+   b. references() → understand usage
+   c. Apply changes as needed
+3. diagnostics() → verify all changes
+```
+
+This pattern is powerful because search() returns exact positions that work directly with other LSP tools.
+
+### Template 6: Learn API Before Using
+
+```
+1. search("ClassName") → find where it's defined
+2. hover(file, line, col) → get class documentation
+3. symbols(file) → see all methods
+4. For methods you'll use:
+   a. hover() → get signature and docs
+   b. signature_help() → get detailed params
+5. Write code using the API
+6. diagnostics() → verify correctness
+```
+
+This prevents trial-and-error coding by understanding the API first.
+
+### Template 7: Complete Coding Workflow
+
+```
+1. Understand the task
+2. Explore relevant code with symbols/hover/definition
+3. Write/edit code
+4. diagnostics() → check for errors
+5. Fix any issues found
+6. Repeat 4-5 until clean
+7. [Optional] Run tests
+```
+
+Always end with diagnostics to ensure code quality.
 
 ## Integration with Other Tools
 

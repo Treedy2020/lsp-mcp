@@ -1,6 +1,6 @@
 # Code Navigation Skill
 
-Navigate Python codebases efficiently using LSP tools.
+Navigate Python and TypeScript codebases efficiently using LSP tools.
 
 ## When to Use
 
@@ -8,6 +8,7 @@ Navigate Python codebases efficiently using LSP tools.
 - Finding where a function/class is defined
 - Tracing how code flows across files
 - Getting type information without reading entire files
+- **Learning APIs before using them** - hover() and signature_help() provide documentation
 
 ## Tools
 
@@ -110,3 +111,6 @@ Agent: [calls references(file, 20, 5)]  # on function definition
 - **Line numbers are 1-based**: First line is 1, not 0
 - **Cross-file works automatically**: definition() and references() work across the entire project
 - **Use hover first**: It's fast and often gives enough info without needing to read files
+- **Learn before coding**: Use hover() to understand method signatures before using APIs
+- **Chain with search()**: Use search() to find positions, then navigate with hover/definition/references
+- **Always verify**: After making changes, run diagnostics() to catch errors early

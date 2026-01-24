@@ -1,0 +1,48 @@
+{
+  "name": "@anthropic/lsp-mcp",
+  "version": "0.1.0",
+  "description": "Unified MCP server aggregating multi-language LSP backends for code intelligence",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "lsp-mcp": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "bun run build.ts",
+    "prepublishOnly": "bun run build",
+    "start": "bun dist/index.js",
+    "dev": "bun --watch src/index.ts",
+    "test": "bun test/test-integration.ts",
+    "inspector": "bunx @modelcontextprotocol/inspector bun dist/index.js"
+  },
+  "keywords": [
+    "mcp",
+    "lsp",
+    "language-server",
+    "python",
+    "typescript",
+    "javascript",
+    "pyright",
+    "rope",
+    "claude",
+    "ai",
+    "code-intelligence"
+  ],
+  "author": "anthropic",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.25.3",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0"
+  }
+}

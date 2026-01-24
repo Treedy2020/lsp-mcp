@@ -1,6 +1,6 @@
 # Code Analysis Skill
 
-Analyze Python code for structure, types, and errors.
+Analyze Python and TypeScript code for structure, types, and errors.
 
 ## Tools
 
@@ -72,36 +72,63 @@ Agent: [calls diagnostics("src/")]
 
 ### search
 
-Search for patterns across the codebase using regex.
+Search for patterns across the codebase using regex. Returns positions in LSP format (file, line, column).
 
 ```
 search(pattern, path=None, glob=None, case_sensitive=True, max_results=50)
 ```
 
-**Use when:**
-- Finding all occurrences of a pattern
-- Searching for specific code constructs
-- Locating TODOs, FIXMEs, or other markers
+**Key Feature: LSP-Ready Positions**
 
-**Example: Find pattern**
+The search tool returns results with exact `file`, `line`, and `column` values that can be directly used with other LSP tools:
+
 ```
-Agent: [calls search("TODO:", path="src/")]
+search("UserService") → [{"file": "src/user.py", "line": 15, "column": 7}, ...]
+                        ↓
+hover(file="src/user.py", line=15, column=7) → Get type info
+definition(...) → Jump to definition
+references(...) → Find all usages
+```
+
+This makes search() the perfect entry point for LSP-based workflows.
+
+**Use when:**
+- Finding all occurrences of a pattern with exact positions
+- Preparing inputs for batch LSP operations
+- Locating TODOs, FIXMEs, or other markers
+- Searching for specific code constructs
+
+**Example: Find and analyze pattern**
+```
+Agent: [calls search("deprecated", path="src/")]
        → results: [
            {"file": "src/api.py", "line": 23, "column": 5},
            {"file": "src/utils.py", "line": 89, "column": 9}
          ]
+Agent: [calls hover("src/api.py", 23, 5)]
+       → Get context for the deprecated item
 ```
 
 **Example: Find function calls**
 ```
 Agent: [calls search(r"\.send_email\(", path="src/")]
-       → All places where send_email is called
+       → All places where send_email is called, with exact positions
 ```
 
 **Example: Filter by file type**
 ```
 Agent: [calls search("import redis", glob="*.py")]
        → Only search in Python files
+```
+
+**Example: Chain with other LSP tools**
+```
+# Find all usages of a deprecated method
+Agent: [calls search("old_method")]
+       → Get all positions
+Agent: For each position:
+       [calls references(file, line, column)]
+       → Find what calls each occurrence
 ```
 
 ## Analysis Patterns
@@ -141,10 +168,35 @@ Agent: [calls search("import redis", glob="*.py")]
 4. Build mental model of architecture
 ```
 
+### Pattern 5: Learn API Before Using
+
+```
+1. search("ClassName") to find where API is defined
+2. hover() on the class/function to get documentation
+3. symbols() to see available methods
+4. signature_help() on methods you'll use
+5. Write code with confidence
+6. diagnostics() to verify
+```
+
+### Pattern 6: Complete Coding Cycle
+
+```
+1. Explore: symbols(), hover(), definition()
+2. Code: Write/Edit
+3. Verify: diagnostics()
+4. Fix: Address any errors
+5. Repeat 3-4 until clean
+```
+
+Always end with diagnostics() - this is critical for code quality.
+
 ## Tips
 
 - **symbols() is fast**: Use it to quickly understand file structure
-- **diagnostics() uses Pyright**: Full type checking, not just syntax
-- **search() uses ripgrep**: Very fast, supports full regex
-- **Combine tools**: symbols() → hover() → definition() is a powerful pattern
+- **diagnostics() is essential**: Always run after making changes
+- **search() returns LSP positions**: Use results directly with hover/definition/references
+- **hover() before coding**: Get API documentation before using unfamiliar code
+- **Combine tools**: search() → hover() → definition() → Edit → diagnostics() is the complete workflow
 - **Check after refactoring**: Always run diagnostics() after rename/move/change_signature
+- **Batch diagnostics**: Run once after all changes, not after each small edit
