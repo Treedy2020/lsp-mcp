@@ -54,16 +54,64 @@ This single server provides:
 ## Project Structure
 
 ```
-lsp-mcp/                    # Unified MCP server (recommended)
-backends/
-  python/
-    python-lsp-mcp/         # Python backend (Rope + Pyright)
-    pyright-mcp/            # Python backend (Pyright only)
-    fixtures/               # Test fixtures
-  typescript/
-    typescript-lsp-mcp/     # TypeScript backend
-    fixtures/               # Test fixtures
-skills/                     # Agent skills and rules
+.
+├── lsp-mcp/                          # 🚀 Unified MCP server (recommended entry point)
+│   ├── src/
+│   │   ├── index.ts                  # Main server entry point
+│   │   ├── config.ts                 # Configuration and env vars
+│   │   ├── backend-manager.ts        # Manages backend subprocesses
+│   │   ├── tool-router.ts            # Routes tools to backends
+│   │   ├── prompts.ts                # Skills exposed as MCP prompts
+│   │   ├── backends/                 # Backend configurations
+│   │   └── tools/                    # Meta tools (status, check_versions)
+│   ├── package.json
+│   └── README.md
+│
+├── backends/
+│   ├── python/
+│   │   ├── python-lsp-mcp/           # 🐍 Python backend (Rope + Pyright)
+│   │   │   ├── src/rope_mcp/
+│   │   │   │   ├── server.py         # MCP server
+│   │   │   │   ├── config.py         # Backend configuration
+│   │   │   │   ├── rope_client.py    # Rope integration
+│   │   │   │   ├── pyright_client.py # Pyright integration
+│   │   │   │   ├── lsp/              # LSP client utilities
+│   │   │   │   └── tools/            # Tool implementations
+│   │   │   ├── tests/
+│   │   │   └── pyproject.toml
+│   │   │
+│   │   ├── pyright-mcp/              # 🐍 Python backend (Pyright only, TypeScript impl)
+│   │   │   ├── src/
+│   │   │   │   ├── index.ts          # MCP server
+│   │   │   │   ├── lsp-client.ts     # Pyright LSP client
+│   │   │   │   ├── lsp/              # LSP utilities
+│   │   │   │   └── tools/            # Tool implementations
+│   │   │   └── package.json
+│   │   │
+│   │   └── fixtures/                 # Python test files
+│   │
+│   └── typescript/
+│       ├── typescript-lsp-mcp/       # 📘 TypeScript backend
+│       │   ├── src/
+│       │   │   ├── index.ts          # MCP server
+│       │   │   └── ts-service.ts     # TypeScript language service
+│       │   └── package.json
+│       │
+│       └── fixtures/                 # TypeScript test files
+│
+├── skills/                           # 📚 Agent skills and rules
+│   ├── code-navigation.md            # hover, definition, references
+│   ├── code-analysis.md              # symbols, diagnostics, search
+│   ├── refactoring.md                # rename, move, change_signature
+│   ├── rules.md                      # Best practices
+│   └── claude-code.md                # Claude Code integration
+│
+├── docs/                             # 📖 Documentation
+│   ├── FEATURES.md                   # Feature comparison
+│   ├── BENCHMARKS.md                 # Performance benchmarks
+│   └── ROPE_REFACTORING.md           # Rope refactoring guide
+│
+└── README.md                         # This file
 ```
 
 ## Individual Backends
