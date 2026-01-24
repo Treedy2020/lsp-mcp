@@ -17,8 +17,9 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const testFile = path.join(__dirname, 'test.py');
-const workspaceRoot = path.dirname(__dirname);
+const fixturesDir = path.resolve(__dirname, '../../fixtures');
+const testFile = path.join(fixturesDir, 'test.py');
+const workspaceRoot = fixturesDir;
 
 console.log('=== Testing LSP Connection ===');
 console.log('Workspace:', workspaceRoot);

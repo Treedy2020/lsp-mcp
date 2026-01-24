@@ -6,13 +6,14 @@ import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(__dirname, '..');
+const fixturesDir = resolve(__dirname, '../../fixtures');
 
 async function main() {
   console.log('=== Starting MCP client test ===\n');
 
   const transport = new StdioClientTransport({
     command: 'node',
-    args: [resolve(projectRoot, 'dist/index.js'), projectRoot],
+    args: [resolve(projectRoot, 'dist/index.js'), fixturesDir],
   });
 
   const client = new Client({
@@ -30,10 +31,10 @@ async function main() {
     console.log(`- ${tool.name}: ${tool.description}`);
   }
 
-  const testFile = resolve(__dirname, 'test.py');
-  const crossFileTest = resolve(__dirname, 'test_cross_file.py');
-  const modelsFile = resolve(__dirname, 'mypackage/models.py');
-  const servicesFile = resolve(__dirname, 'mypackage/services.py');
+  const testFile = resolve(fixturesDir, 'test.py');
+  const crossFileTest = resolve(fixturesDir, 'test_cross_file.py');
+  const modelsFile = resolve(fixturesDir, 'mypackage/models.py');
+  const servicesFile = resolve(fixturesDir, 'mypackage/services.py');
 
   // Test hover
   console.log('\n=== Testing hover tool ===');
