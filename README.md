@@ -48,7 +48,10 @@ This single server provides:
 | rename | ✓ | ✓ | Rename symbol across files |
 | search | ✓ | ✓ | Regex search in codebase |
 | signature_help | ✓ | ✓ | Get function signature info |
-| move | ✓ | - | Move function/class to another module |
+| move | ✓ | ✓ | Move function/class to another file |
+| function_signature | ✓ | ✓ | Get current function signature |
+| available_refactors | - | ✓ | List available refactorings at position |
+| apply_refactor | - | ✓ | Apply a specific refactoring |
 | change_signature | ✓ | - | Modify function parameters |
 
 ## Project Structure

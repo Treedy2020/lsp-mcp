@@ -273,6 +273,51 @@ if (config.typescript.enabled) {
       file: z.string().describe("A TypeScript/JavaScript file to check project status for"),
     },
   }, async (args) => backendManager.callTool("typescript", "status", args));
+
+  // typescript/move
+  server.registerTool("typescript/move", {
+    description: "Move a function, class, or variable to a new file",
+    inputSchema: {
+      file: z.string().describe("Absolute path to the file"),
+      line: z.number().int().positive().describe("Line number (1-based)"),
+      column: z.number().int().positive().describe("Column number (1-based)"),
+      destination: z.string().optional().describe("Destination file path (optional)"),
+      preview: z.boolean().default(false).describe("If true, only show what would change"),
+    },
+  }, async (args) => backendManager.callTool("typescript", "move", args));
+
+  // typescript/function_signature
+  server.registerTool("typescript/function_signature", {
+    description: "Get the current signature of a function at a specific position",
+    inputSchema: {
+      file: z.string().describe("Absolute path to the file"),
+      line: z.number().int().positive().describe("Line number (1-based)"),
+      column: z.number().int().positive().describe("Column number (1-based)"),
+    },
+  }, async (args) => backendManager.callTool("typescript", "function_signature", args));
+
+  // typescript/available_refactors
+  server.registerTool("typescript/available_refactors", {
+    description: "Get available refactoring actions at a specific position",
+    inputSchema: {
+      file: z.string().describe("Absolute path to the file"),
+      line: z.number().int().positive().describe("Line number (1-based)"),
+      column: z.number().int().positive().describe("Column number (1-based)"),
+    },
+  }, async (args) => backendManager.callTool("typescript", "available_refactors", args));
+
+  // typescript/apply_refactor
+  server.registerTool("typescript/apply_refactor", {
+    description: "Apply a specific refactoring action at a position",
+    inputSchema: {
+      file: z.string().describe("Absolute path to the file"),
+      line: z.number().int().positive().describe("Line number (1-based)"),
+      column: z.number().int().positive().describe("Column number (1-based)"),
+      refactorName: z.string().describe("Name of the refactoring"),
+      actionName: z.string().describe("Name of the action"),
+      preview: z.boolean().default(false).describe("If true, only show what would change"),
+    },
+  }, async (args) => backendManager.callTool("typescript", "apply_refactor", args));
 }
 
 // ============================================================================

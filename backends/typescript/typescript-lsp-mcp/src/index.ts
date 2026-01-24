@@ -27,6 +27,10 @@ import {
   offsetToPosition,
   displayPartsToString,
   formatDiagnostic,
+  getApplicableRefactors,
+  getRefactorEdits,
+  getFunctionSignature,
+  applyFileChanges,
 } from "./ts-service.js";
 
 // Create MCP server
@@ -611,6 +615,225 @@ server.tool(
           content: [{ type: "text", text: JSON.stringify({ matches: [], count: 0 }) }],
         };
       }
+      return {
+        content: [{ type: "text", text: JSON.stringify({ error: String(error) }) }],
+      };
+    }
+  }
+);
+
+// ============================================================================
+// Tool: move
+// ============================================================================
+server.tool(
+  "move",
+  "Move a function, class, or variable to a new file. Uses TypeScript's 'Move to a new file' refactoring.",
+  {
+    file: z.string().describe("Absolute path to the file"),
+    line: z.number().int().positive().describe("Line number (1-based)"),
+    column: z.number().int().positive().describe("Column number (1-based)"),
+    destination: z.string().optional().describe("Destination file path (optional, TypeScript will generate a name if not provided)"),
+    preview: z.boolean().default(false).describe("If true, only show what would change"),
+  },
+  async ({ file, line, column, destination, preview }) => {
+    try {
+      // Get available refactorings
+      const refactors = getApplicableRefactors(file, line, column);
+
+      // Look for "Move to a new file" refactoring
+      const moveRefactor = refactors.find(
+        (r) => r.name === "Move to a new file" || r.actions.some((a) => a.name.includes("Move"))
+      );
+
+      if (!moveRefactor) {
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              error: "Cannot move symbol at this position",
+              available: refactors.map((r) => ({
+                name: r.name,
+                actions: r.actions.map((a) => a.name),
+              })),
+            }),
+          }],
+        };
+      }
+
+      // Find the move action
+      const moveAction = moveRefactor.actions.find((a) => a.name.includes("Move")) || moveRefactor.actions[0];
+
+      // Get the edits
+      const edits = getRefactorEdits(file, line, column, moveRefactor.name, moveAction.name);
+
+      if (!edits || !edits.edits.length) {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ error: "No edits generated for move" }) }],
+        };
+      }
+
+      if (preview) {
+        // Just show what would change
+        const changes = edits.edits.map((edit) => ({
+          file: edit.fileName,
+          isNewFile: edit.isNewFile,
+          changes: edit.textChanges.length,
+        }));
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              preview: true,
+              action: moveAction.name,
+              changes,
+            }),
+          }],
+        };
+      }
+
+      // Apply the changes
+      const result = applyFileChanges(edits.edits);
+
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            success: true,
+            action: moveAction.name,
+            ...result,
+          }),
+        }],
+      };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: JSON.stringify({ error: String(error) }) }],
+      };
+    }
+  }
+);
+
+// ============================================================================
+// Tool: function_signature
+// ============================================================================
+server.tool(
+  "function_signature",
+  "Get the current signature of a function at a specific position",
+  {
+    file: z.string().describe("Absolute path to the file"),
+    line: z.number().int().positive().describe("Line number (1-based)"),
+    column: z.number().int().positive().describe("Column number (1-based)"),
+  },
+  async ({ file, line, column }) => {
+    try {
+      const signature = getFunctionSignature(file, line, column);
+
+      if (!signature) {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ error: "No function found at this position" }) }],
+        };
+      }
+
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify(signature),
+        }],
+      };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: JSON.stringify({ error: String(error) }) }],
+      };
+    }
+  }
+);
+
+// ============================================================================
+// Tool: available_refactors
+// ============================================================================
+server.tool(
+  "available_refactors",
+  "Get available refactoring actions at a specific position",
+  {
+    file: z.string().describe("Absolute path to the file"),
+    line: z.number().int().positive().describe("Line number (1-based)"),
+    column: z.number().int().positive().describe("Column number (1-based)"),
+  },
+  async ({ file, line, column }) => {
+    try {
+      const refactors = getApplicableRefactors(file, line, column);
+
+      const result = refactors.map((r) => ({
+        name: r.name,
+        description: r.description,
+        actions: r.actions.map((a) => ({
+          name: a.name,
+          description: a.description,
+        })),
+      }));
+
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({ refactors: result, count: result.length }),
+        }],
+      };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: JSON.stringify({ error: String(error) }) }],
+      };
+    }
+  }
+);
+
+// ============================================================================
+// Tool: apply_refactor
+// ============================================================================
+server.tool(
+  "apply_refactor",
+  "Apply a specific refactoring action at a position",
+  {
+    file: z.string().describe("Absolute path to the file"),
+    line: z.number().int().positive().describe("Line number (1-based)"),
+    column: z.number().int().positive().describe("Column number (1-based)"),
+    refactorName: z.string().describe("Name of the refactoring (from available_refactors)"),
+    actionName: z.string().describe("Name of the action (from available_refactors)"),
+    preview: z.boolean().default(false).describe("If true, only show what would change"),
+  },
+  async ({ file, line, column, refactorName, actionName, preview }) => {
+    try {
+      const edits = getRefactorEdits(file, line, column, refactorName, actionName);
+
+      if (!edits || !edits.edits.length) {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ error: "No edits generated" }) }],
+        };
+      }
+
+      if (preview) {
+        const changes = edits.edits.map((edit) => ({
+          file: edit.fileName,
+          isNewFile: edit.isNewFile,
+          changes: edit.textChanges.length,
+        }));
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({ preview: true, changes }),
+          }],
+        };
+      }
+
+      const result = applyFileChanges(edits.edits);
+
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({ success: true, ...result }),
+        }],
+      };
+    } catch (error) {
       return {
         content: [{ type: "text", text: JSON.stringify({ error: String(error) }) }],
       };

@@ -357,3 +357,166 @@ export function displayPartsToString(
   if (!parts) return "";
   return parts.map((p) => p.text).join("");
 }
+
+/**
+ * Get applicable refactorings at a position.
+ */
+export function getApplicableRefactors(
+  filePath: string,
+  line: number,
+  column: number
+): ts.ApplicableRefactorInfo[] {
+  const { service, absPath } = getServiceForFile(filePath);
+  const content = getFileContent(absPath);
+  const offset = positionToOffset(content, line, column);
+  return service.getApplicableRefactors(absPath, offset, {}) || [];
+}
+
+/**
+ * Get edits for a refactoring.
+ */
+export function getRefactorEdits(
+  filePath: string,
+  line: number,
+  column: number,
+  refactorName: string,
+  actionName: string
+): ts.RefactorEditInfo | undefined {
+  const { service, absPath } = getServiceForFile(filePath);
+  const content = getFileContent(absPath);
+  const offset = positionToOffset(content, line, column);
+  return service.getEditsForRefactor(absPath, {}, offset, refactorName, actionName, {});
+}
+
+/**
+ * Get function signature at a position.
+ */
+export function getFunctionSignature(
+  filePath: string,
+  line: number,
+  column: number
+): {
+  name: string;
+  parameters: Array<{ name: string; type: string; optional: boolean; defaultValue?: string }>;
+  returnType: string;
+  kind: string;
+} | undefined {
+  const { service, absPath } = getServiceForFile(filePath);
+  const content = getFileContent(absPath);
+  const offset = positionToOffset(content, line, column);
+
+  // Get the quick info to find the function
+  const info = service.getQuickInfoAtPosition(absPath, offset);
+  if (!info) return undefined;
+
+  // Check if it's a function/method
+  if (info.kind !== ts.ScriptElementKind.functionElement &&
+      info.kind !== ts.ScriptElementKind.memberFunctionElement &&
+      info.kind !== ts.ScriptElementKind.constructorImplementationElement &&
+      info.kind !== ts.ScriptElementKind.callSignatureElement) {
+    return undefined;
+  }
+
+  // Parse the display string to extract parameters
+  const displayString = displayPartsToString(info.displayParts);
+
+  // Extract function name
+  const nameMatch = displayString.match(/^(?:function\s+)?(\w+)/);
+  const name = nameMatch ? nameMatch[1] : "anonymous";
+
+  // Extract parameters from between parentheses
+  const paramsMatch = displayString.match(/\(([^)]*)\)/);
+  const paramsStr = paramsMatch ? paramsMatch[1] : "";
+
+  const parameters: Array<{ name: string; type: string; optional: boolean; defaultValue?: string }> = [];
+
+  if (paramsStr.trim()) {
+    // Split by comma but be careful with generics
+    let depth = 0;
+    let current = "";
+    const parts: string[] = [];
+
+    for (const char of paramsStr) {
+      if (char === "<" || char === "(") depth++;
+      else if (char === ">" || char === ")") depth--;
+      else if (char === "," && depth === 0) {
+        parts.push(current.trim());
+        current = "";
+        continue;
+      }
+      current += char;
+    }
+    if (current.trim()) parts.push(current.trim());
+
+    for (const param of parts) {
+      const optional = param.includes("?:");
+      const [paramName, ...typeParts] = param.split(/\??:/);
+      const type = typeParts.join(":").trim() || "any";
+
+      parameters.push({
+        name: paramName.trim(),
+        type,
+        optional,
+      });
+    }
+  }
+
+  // Extract return type
+  const returnMatch = displayString.match(/\):\s*(.+)$/);
+  const returnType = returnMatch ? returnMatch[1].trim() : "void";
+
+  return {
+    name,
+    parameters,
+    returnType,
+    kind: info.kind,
+  };
+}
+
+/**
+ * Apply file changes to disk.
+ */
+export function applyFileChanges(
+  changes: ts.FileTextChanges[]
+): { changedFiles: string[]; created: string[]; deleted: string[] } {
+  const changedFiles: string[] = [];
+  const created: string[] = [];
+  const deleted: string[] = [];
+
+  for (const fileChange of changes) {
+    const filePath = fileChange.fileName;
+
+    if (fileChange.isNewFile) {
+      // Create new file
+      const content = fileChange.textChanges
+        .map((change) => change.newText)
+        .join("");
+      fs.writeFileSync(filePath, content, "utf-8");
+      created.push(filePath);
+    } else if (fs.existsSync(filePath)) {
+      // Apply changes to existing file
+      let content = fs.readFileSync(filePath, "utf-8");
+
+      // Sort changes in reverse order to apply from end to start
+      const sortedChanges = [...fileChange.textChanges].sort(
+        (a, b) => b.span.start - a.span.start
+      );
+
+      for (const change of sortedChanges) {
+        content =
+          content.substring(0, change.span.start) +
+          change.newText +
+          content.substring(change.span.start + change.span.length);
+      }
+
+      fs.writeFileSync(filePath, content, "utf-8");
+      changedFiles.push(filePath);
+
+      // Update in-memory document
+      documentContents.set(filePath, content);
+      documentVersions.set(filePath, (documentVersions.get(filePath) || 0) + 1);
+    }
+  }
+
+  return { changedFiles, created, deleted };
+}
