@@ -1,6 +1,6 @@
-# PyLspMcp
+# LSP MCP
 
-MCP (Model Context Protocol) servers for Python code intelligence. Designed for **LLM agents** like Claude Code, Codex, and other AI coding assistants.
+MCP (Model Context Protocol) servers for **Python and TypeScript** code intelligence. Designed for **LLM agents** like Claude Code, Codex, and other AI coding assistants.
 
 ## Why MCP for Code Intelligence?
 
@@ -10,65 +10,84 @@ LLM agents need to understand code structure to help effectively. These MCP serv
 - **Definition jumping** - Navigate to where functions/classes are defined
 - **Type information** - Get accurate type hints and documentation
 - **Symbol extraction** - Understand code structure at a glance
+- **Safe refactoring** - Rename, move, change signatures across files
 
 Unlike IDE plugins where millisecond latency matters, MCP servers optimize for **correctness over speed**. A response under 1 second is perfectly fine - what matters is giving the LLM accurate information to prevent hallucinations.
 
-## Implementations
+## Quick Start (Recommended)
 
-| Implementation | Language | Backend | Best For |
-|----------------|----------|---------|----------|
-| **[pyright-mcp](./ts/)** | TypeScript | Pyright LSP | Type-heavy projects, diagnostics |
-| **[python-lsp-mcp](./python/)** | Python | Rope + Pyright | Quick setup, refactoring |
+Use the **unified lsp-mcp server** that provides both Python and TypeScript support:
 
-See [docs/FEATURES.md](./docs/FEATURES.md) for detailed feature comparison.
+```json
+{
+  "mcpServers": {
+    "lsp-mcp": {
+      "command": "npx",
+      "args": ["@anthropic/lsp-mcp@latest"]
+    }
+  }
+}
+```
+
+This single server provides:
+- **Namespaced tools**: `python/hover`, `typescript/definition`, etc.
+- **Auto language detection**: Infers language from file extensions
+- **Auto-update**: Backends updated to latest versions on startup
+- **Lazy loading**: Backends start only when first used
 
 ## Features
 
-- **hover** - Get type information and documentation at a position
-- **definition** - Jump to symbol definition
-- **references** - Find all references to a symbol
-- **completions** - Get code completion suggestions
-- **diagnostics** - Get type errors and warnings
-- **signature_help** - Get function signature information
-- **rename** - Preview symbol renaming
-- **search** - Search for patterns in files (ripgrep-style)
-- **status** - Check Python/Pyright environment status
-- **symbols** - Extract symbols (classes, functions, methods, variables)
-- **update_document** - Update file content for incremental analysis
+| Feature | Python | TypeScript | Description |
+|---------|--------|------------|-------------|
+| hover | ✓ | ✓ | Get type information and documentation |
+| definition | ✓ | ✓ | Jump to symbol definition |
+| references | ✓ | ✓ | Find all references to a symbol |
+| completions | ✓ | ✓ | Get code completion suggestions |
+| diagnostics | ✓ | ✓ | Get type errors and warnings |
+| symbols | ✓ | ✓ | Extract symbols from a file |
+| rename | ✓ | ✓ | Rename symbol across files |
+| search | ✓ | ✓ | Regex search in codebase |
+| signature_help | ✓ | ✓ | Get function signature info |
+| move | ✓ | - | Move function/class to another module |
+| change_signature | ✓ | - | Modify function parameters |
 
-## Quick Start
+## Project Structure
 
-### TypeScript Version (pyright-mcp)
-
-```bash
-# Run directly with npx
-npx @treedy/pyright-mcp
-
-# Or install globally
-npm install -g @treedy/pyright-mcp
+```
+lsp-mcp/                    # Unified MCP server (recommended)
+backends/
+  python/
+    python-lsp-mcp/         # Python backend (Rope + Pyright)
+    pyright-mcp/            # Python backend (Pyright only)
+    fixtures/               # Test fixtures
+  typescript/
+    typescript-lsp-mcp/     # TypeScript backend
+    fixtures/               # Test fixtures
+skills/                     # Agent skills and rules
 ```
 
-See [ts/README.md](./ts/README.md) for detailed documentation.
+## Individual Backends
 
-### Python Version (python-lsp-mcp)
+If you prefer to use backends separately:
 
-```bash
-cd python
+### Python (python-lsp-mcp)
 
-# Install with uv
-uv sync
-
-# Run the server
-uv run python-lsp-mcp
+```json
+{
+  "mcpServers": {
+    "python-lsp-mcp": {
+      "command": "uvx",
+      "args": ["python-lsp-mcp"]
+    }
+  }
+}
 ```
 
-See [python/README.md](./python/README.md) for detailed documentation.
+Supports two analysis backends:
+- **rope** (default) - Fast, Python-native, supports refactoring
+- **pyright** - Full type checking, better cross-file analysis
 
-## MCP Configuration
-
-Add to your `.mcp.json` or Claude Code settings:
-
-### Using pyright-mcp (TypeScript)
+### Python (pyright-mcp)
 
 ```json
 {
@@ -81,72 +100,16 @@ Add to your `.mcp.json` or Claude Code settings:
 }
 ```
 
-### Using python-lsp-mcp (Python)
+TypeScript implementation using Pyright LSP directly.
 
-python-lsp-mcp supports two backends:
-- **rope** (default) - Fast, low latency, good for quick operations
-- **pyright** - Accurate type inference, better cross-file analysis
-
-#### Default (Rope backend - faster)
+### TypeScript (typescript-lsp-mcp)
 
 ```json
 {
   "mcpServers": {
-    "python-lsp-mcp": {
-      "command": "uvx",
-      "args": ["python-lsp-mcp@latest"]
-    }
-  }
-}
-```
-
-#### With Pyright backend (more accurate)
-
-```json
-{
-  "mcpServers": {
-    "python-lsp-mcp": {
-      "command": "uvx",
-      "args": ["python-lsp-mcp@latest"],
-      "env": {
-        "PYTHON_LSP_MCP_BACKEND": "pyright"
-      }
-    }
-  }
-}
-```
-
-#### Hybrid (Pyright for hover/definition, Rope for others)
-
-```json
-{
-  "mcpServers": {
-    "python-lsp-mcp": {
-      "command": "uvx",
-      "args": ["python-lsp-mcp@latest"],
-      "env": {
-        "PYTHON_LSP_MCP_HOVER_BACKEND": "pyright",
-        "PYTHON_LSP_MCP_DEFINITION_BACKEND": "pyright"
-      }
-    }
-  }
-}
-```
-
-> **Tip**: You can also switch backends at runtime using the `set_backend` tool.
-
-### Using Both Implementations
-
-```json
-{
-  "mcpServers": {
-    "pyright-mcp": {
+    "typescript-lsp-mcp": {
       "command": "npx",
-      "args": ["@treedy/pyright-mcp@latest"]
-    },
-    "python-lsp-mcp": {
-      "command": "uvx",
-      "args": ["python-lsp-mcp@latest"]
+      "args": ["@treedy/typescript-lsp-mcp@latest"]
     }
   }
 }
@@ -154,48 +117,64 @@ python-lsp-mcp supports two backends:
 
 ## Agent Skills & Rules
 
-The [skills/](./skills/) folder contains guidance for AI agents to use this MCP effectively:
+The [skills/](./skills/) folder contains guidance for AI agents:
 
 | Document | Description |
 |----------|-------------|
 | [code-navigation.md](./skills/code-navigation.md) | Navigate code with hover, definition, references |
-| [refactoring.md](./skills/refactoring.md) | Safe cross-file refactoring (rename, move, change_signature) |
+| [refactoring.md](./skills/refactoring.md) | Safe cross-file refactoring |
 | [code-analysis.md](./skills/code-analysis.md) | Analyze code structure and find errors |
-| [rules.md](./skills/rules.md) | Best practices and anti-patterns |
-| [claude-code.md](./skills/claude-code.md) | Claude Code specific integration |
+| [rules.md](./skills/rules.md) | Best practices for using LSP tools |
 
 ### Key Rules for LLMs
 
 1. **Use LSP before reading files** - `hover()` is faster than reading entire files
-2. **Use refactoring tools for cross-file changes** - `rename()` beats manual search-replace
-3. **Verify after refactoring** - Always run `diagnostics()` to catch errors
-4. **Preview large changes** - Use `preview=True` before applying
+2. **Use search() to get LSP positions** - Results can be used directly with other tools
+3. **Learn APIs before coding** - Use `hover()` and `signature_help()` before using unfamiliar methods
+4. **Always verify with diagnostics** - Run `diagnostics()` after any code changes
+5. **Use refactoring tools for cross-file changes** - `rename()` beats manual search-replace
+
+## Configuration
+
+### Environment Variables (lsp-mcp)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LSP_MCP_PYTHON_ENABLED` | `true` | Enable Python backend |
+| `LSP_MCP_PYTHON_PROVIDER` | `python-lsp-mcp` | Python provider (`python-lsp-mcp` or `pyright-mcp`) |
+| `LSP_MCP_TYPESCRIPT_ENABLED` | `true` | Enable TypeScript backend |
+| `LSP_MCP_AUTO_UPDATE` | `true` | Auto-update backends on startup |
 
 ## Architecture
 
-### pyright-mcp (TypeScript)
-
 ```
-┌─────────────────┐     stdio      ┌─────────────────────┐     stdio      ┌──────────────────┐
-│  Claude / AI    │ ◄────────────► │    pyright-mcp      │ ◄────────────► │ pyright-langserver│
-│                 │      MCP       │                     │      LSP       │                  │
-└─────────────────┘                └─────────────────────┘                └──────────────────┘
-```
-
-### python-lsp-mcp (Python)
-
-```
-┌─────────────────┐     stdio      ┌─────────────────────┐
-│  Claude / AI    │ ◄────────────► │      python-lsp-mcp       │
-│                 │      MCP       │                     │
-└─────────────────┘                └─────────┬───────────┘
-                                             │
-                           ┌─────────────────┼─────────────────┐
-                           ▼                 ▼                 ▼
-                    ┌───────────┐     ┌───────────┐     ┌───────────┐
-                    │   Rope    │     │  Pyright  │     │ Pyright   │
-                    │  Library  │     │   CLI     │     │   LSP     │
-                    └───────────┘     └───────────┘     └───────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                      Claude Code / AI Client                     │
+└─────────────────────────────────────────────────────────────────┘
+                              │ MCP (stdio)
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                          lsp-mcp                                 │
+│                    (Unified MCP Server)                          │
+│                                                                  │
+│  ┌────────────────────────────────────────────────────────────┐ │
+│  │                    Tool Router                              │ │
+│  │  python/hover → Python backend                             │ │
+│  │  typescript/definition → TypeScript backend                │ │
+│  └────────────────────────────────────────────────────────────┘ │
+│         │                                      │                 │
+│         ▼                                      ▼                 │
+│  ┌────────────┐                        ┌────────────┐           │
+│  │  Python    │                        │ TypeScript │           │
+│  │  Backend   │                        │  Backend   │           │
+│  └────────────┘                        └────────────┘           │
+└─────────────────────────────────────────────────────────────────┘
+        │ MCP (stdio)                          │ MCP (stdio)
+        ▼                                      ▼
+┌──────────────┐                        ┌──────────────┐
+│python-lsp-mcp│                        │typescript-   │
+│ (subprocess) │                        │ lsp-mcp      │
+└──────────────┘                        └──────────────┘
 ```
 
 ## License
