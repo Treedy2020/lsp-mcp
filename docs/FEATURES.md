@@ -1,147 +1,132 @@
-# PyLspMcp Features Roadmap
+# PyLspMcp Features
 
-This document tracks the features implemented and planned for the PyLspMcp project.
+## Design Philosophy
+
+This MCP server is designed for **LLM agents**, not human IDE users. This means:
+
+- **Correctness over speed** - Accurate information prevents LLM hallucinations
+- **Cross-file operations** - LLMs need to understand code relationships across files
+- **Sub-second is fine** - Unlike IDEs, LLMs don't need millisecond latency
 
 ## Feature Status
 
 ### Core Features
 
-| Feature | TypeScript | Python (Rope) | Python (Pyright) | Priority |
-|---------|------------|---------------|------------------|----------|
-| hover | ✅ | ✅ | ✅ | P0 |
-| definition | ✅ | ✅ | ✅ | P0 |
-| references | ✅ | ✅ | ✅ | P0 |
-| completions | ✅ | ✅ | ✅ | P0 |
-| symbols | ✅ | ✅ | ✅ | P0 |
-| rename | ✅ | ✅ | - | P0 |
-| diagnostics | ✅ | - | ✅ | P0 |
-| signature_help | ✅ | - | ✅ | P1 |
-| update_document | ✅ | - | ✅ | P1 |
-| status | ✅ | ✅ | - | P2 |
-| search | ✅ | ✅ | - | P2 |
+| Feature | TypeScript | Python (Rope) | Python (Pyright) |
+|---------|------------|---------------|------------------|
+| hover | ✅ | ✅ | ✅ |
+| definition | ✅ | ✅ | ✅ |
+| references | ✅ | ✅ | ✅ |
+| completions | ✅ | ✅ | ✅ |
+| symbols | ✅ | ✅ | ✅ |
+| rename | ✅ | ✅ | - |
+| diagnostics | ✅ | - | ✅ |
+| signature_help | ✅ | - | ✅ |
+| search | ✅ | ✅ | - |
+| set_backend | - | ✅ | - |
+| set_python_path | - | ✅ | - |
+| status | ✅ | ✅ | - |
 
-### Planned Features
+## What Matters Most for LLMs
 
-| Feature | Description | Target | Status |
-|---------|-------------|--------|--------|
-| workspace_symbols | Search symbols across workspace | v0.3.0 | Planned |
-| code_actions | Quick fixes and refactorings | v0.3.0 | Planned |
-| type_hierarchy | Show type inheritance | v0.4.0 | Planned |
-| call_hierarchy | Show call relationships | v0.4.0 | Planned |
-| inlay_hints | Inline type hints | v0.4.0 | Planned |
-| semantic_tokens | Token classification | v0.5.0 | Research |
+### Critical
+
+| Feature | Why |
+|---------|-----|
+| **Cross-file references** | LLMs need to trace code flow across modules |
+| **Accurate definitions** | Wrong locations cause cascading errors |
+| **Correct type info** | Prevents type-related hallucinations |
+
+### Important
+
+| Feature | Why |
+|---------|-----|
+| **Symbol extraction** | Helps LLMs understand code structure |
+| **Completions** | Provides accurate API suggestions |
+| **Diagnostics** | Catches errors before execution |
+
+### Nice to Have
+
+| Feature | Why |
+|---------|-----|
+| Low latency | LLMs process results, not real-time typing |
+| Incremental updates | Each request is typically independent |
 
 ## Backend Comparison
 
 ### Rope (Python)
 
 **Strengths:**
-- Fast for basic operations (4-5x faster than Pyright LSP)
-- Excellent refactoring support (rename, extract, inline)
 - Pure Python, no external dependencies
+- Excellent refactoring (rename, extract, inline)
 - Low memory footprint
-- Consistent, low-variance performance
+- Fast startup
 
 **Limitations:**
 - No type checking / diagnostics
-- Limited signature help
-- Cross-file analysis less accurate
-- No incremental parsing
+- Basic type inference
+- Cross-file analysis less comprehensive
 
 **Best for:**
 - Quick refactoring tasks
-- Low-latency requirements
 - Minimal dependency environments
-- CI/CD pipelines
+- Projects without complex type annotations
 
-### Pyright (TypeScript LSP)
+### Pyright
 
 **Strengths:**
 - Full type checking with diagnostics
-- Accurate type inference
+- Accurate type inference for generics
 - Excellent cross-file analysis
-- Incremental updates
-- Rich signature help
+- Rich hover information
 
 **Limitations:**
-- Slower cold start (~1-2s)
+- Requires pyright-langserver (via npm)
 - Higher memory usage
-- Requires Node.js runtime
-- More complex setup
 
 **Best for:**
 - Type-heavy projects
-- Large codebases
+- Large codebases with complex types
 - Projects requiring diagnostics
-- Full IDE-like experience
 
-### Hybrid Approach (python-lsp-mcp)
+### Hybrid Approach
 
-The python-lsp-mcp server supports both backends, allowing you to:
-- Use Rope for fast operations (hover, definition, completions)
-- Use Pyright for diagnostics and signature help
-- Switch backends per-tool via configuration
+python-lsp-mcp supports runtime backend switching:
 
-## Implementation Details
+```bash
+# Set default backend via environment
+PYTHON_LSP_MCP_BACKEND=pyright
 
-### Rope APIs Used
+# Or per-tool
+PYTHON_LSP_MCP_HOVER_BACKEND=pyright
+PYTHON_LSP_MCP_DEFINITION_BACKEND=pyright
+```
 
-| Feature | Rope API |
-|---------|----------|
-| hover | `codeassist.get_doc()` |
-| definition | `codeassist.get_definition_location()` |
-| references | `findit.find_occurrences()` |
-| completions | `codeassist.code_assist()` |
-| symbols | Python `ast` module |
-| rename | `rope.refactor.rename.Rename` |
+You can also switch at runtime using the `set_backend` tool.
 
-### Pyright Integration
+## Python Interpreter Detection
 
-| Mode | Description |
-|------|-------------|
-| CLI | `pyright --outputjson` for diagnostics |
-| LSP | `pyright-langserver --stdio` for full features |
+python-lsp-mcp automatically detects the Python interpreter:
 
-## Quality Metrics
-
-### Test Coverage Goals
-
-| Area | Current | Target |
-|------|---------|--------|
-| Tools | 90% | 95% |
-| Client | 80% | 90% |
-| Integration | 70% | 85% |
-
-### Performance Targets
-
-| Operation | Target (ms) | Achieved |
-|-----------|-------------|----------|
-| hover | < 1.0 | ✅ 0.16 |
-| definition | < 1.0 | ✅ 0.12 |
-| references | < 20.0 | ✅ 14.2 |
-| completions | < 2.0 | ✅ 0.36 |
-| symbols | < 1.0 | ✅ 0.24 |
+1. **Manual override** via `set_python_path` tool
+2. **Pyright config** from `pyrightconfig.json` or `pyproject.toml`
+3. **Virtual environment** (`.venv`, `venv`, `env`)
+4. **System Python** (fallback)
 
 ## Version History
 
 ### v0.2.0 (Current)
 - Dual backend support (Rope + Pyright)
-- LSP client for Pyright language server
-- Configurable backend per-tool
-- Benchmark test suite
+- Runtime backend switching
+- Python interpreter auto-detection
+- Cross-file reference support
 
 ### v0.1.0
-- Initial Rope-based implementation
-- Basic MCP tools (hover, definition, references, completions, symbols, rename)
-- pytest test suite
-
-## Contributing
-
-See the main [README.md](../README.md) for contribution guidelines.
+- Initial implementation
+- Basic MCP tools
 
 ## References
 
 - [Rope Documentation](https://rope.readthedocs.io/)
 - [Pyright Documentation](https://microsoft.github.io/pyright/)
 - [MCP Specification](https://spec.modelcontextprotocol.io/)
-- [LSP Specification](https://microsoft.github.io/language-server-protocol/)

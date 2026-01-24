@@ -1,17 +1,26 @@
 # PyLspMcp
 
-MCP (Model Context Protocol) servers for Python code intelligence. Works with Claude Code, Codex, and other MCP-compatible AI tools.
+MCP (Model Context Protocol) servers for Python code intelligence. Designed for **LLM agents** like Claude Code, Codex, and other AI coding assistants.
+
+## Why MCP for Code Intelligence?
+
+LLM agents need to understand code structure to help effectively. These MCP servers provide:
+
+- **Cross-file references** - Find all usages of a symbol across your codebase
+- **Definition jumping** - Navigate to where functions/classes are defined
+- **Type information** - Get accurate type hints and documentation
+- **Symbol extraction** - Understand code structure at a glance
+
+Unlike IDE plugins where millisecond latency matters, MCP servers optimize for **correctness over speed**. A response under 1 second is perfectly fine - what matters is giving the LLM accurate information to prevent hallucinations.
 
 ## Implementations
 
-This project provides multiple implementations:
+| Implementation | Language | Backend | Best For |
+|----------------|----------|---------|----------|
+| **[pyright-mcp](./ts/)** | TypeScript | Pyright LSP | Type-heavy projects, diagnostics |
+| **[python-lsp-mcp](./python/)** | Python | Rope + Pyright | Quick setup, refactoring |
 
-| Implementation | Language | Backend | Description |
-|----------------|----------|---------|-------------|
-| **[pyright-mcp](./ts/)** | TypeScript | Pyright LSP | Full-featured with type checking |
-| **[python-lsp-mcp](./python/)** | Python | Rope + Pyright | Fast, Python-native |
-
-See [docs/FEATURES.md](./docs/FEATURES.md) for detailed feature comparison and [docs/BENCHMARKS.md](./docs/BENCHMARKS.md) for performance data.
+See [docs/FEATURES.md](./docs/FEATURES.md) for detailed feature comparison.
 
 ## Features
 
