@@ -1,0 +1,46 @@
+{
+  "name": "@treedy/typescript-lsp-mcp",
+  "version": "0.1.0",
+  "description": "MCP server providing TypeScript/JavaScript code intelligence using the official TypeScript Language Service",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "typescript-lsp-mcp": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "bun run build.ts",
+    "prepublishOnly": "bun run build",
+    "start": "bun dist/index.js",
+    "dev": "bun --watch src/index.ts",
+    "test": "bun test",
+    "inspector": "bunx @modelcontextprotocol/inspector bun dist/index.js"
+  },
+  "keywords": [
+    "mcp",
+    "typescript",
+    "javascript",
+    "lsp",
+    "language-server",
+    "claude",
+    "ai",
+    "code-intelligence",
+    "type-checking"
+  ],
+  "author": "treedy",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.25.3",
+    "typescript": "^5.9.3",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^25.0.10"
+  }
+}
