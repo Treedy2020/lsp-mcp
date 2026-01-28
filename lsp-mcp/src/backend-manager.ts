@@ -185,6 +185,7 @@ export class BackendManager {
 
     if (this.config.python.enabled) languages.push("python");
     if (this.config.typescript.enabled) languages.push("typescript");
+    if (this.config.vue.enabled) languages.push("vue");
 
     await Promise.all(
       languages.map(async (lang) => {
@@ -231,6 +232,9 @@ export class BackendManager {
     if (this.config.typescript.enabled && !this.backends.has("typescript")) {
       status["typescript"] = { status: "not_started", tools: 0, restartCount: 0 };
     }
+    if (this.config.vue.enabled && !this.backends.has("vue")) {
+      status["vue"] = { status: "not_started", tools: 0, restartCount: 0 };
+    }
 
     return status as Record<
       Language,
@@ -247,6 +251,7 @@ export class BackendManager {
 
     if (this.config.python.enabled) languages.push("python");
     if (this.config.typescript.enabled) languages.push("typescript");
+    if (this.config.vue.enabled) languages.push("vue");
 
     for (const lang of languages) {
       const backendConfig = getBackendCommand(lang, this.config);
@@ -262,6 +267,34 @@ export class BackendManager {
     }
 
     return versions;
+  }
+
+  /**
+   * Restart a backend to pick up updates.
+   * Returns the old and new version.
+   */
+  async restartBackend(language: Language): Promise<{ oldVersion: string | null; newVersion: string | null }> {
+    const existing = this.backends.get(language);
+    const oldVersion = existing?.serverInfo?.version ?? null;
+
+    // Stop the existing backend if running
+    if (existing) {
+      console.error(`[BackendManager] Stopping ${language} for update...`);
+      try {
+        await existing.transport.close();
+        await existing.client.close();
+      } catch (error) {
+        console.error(`[BackendManager] Error closing ${language}:`, error);
+      }
+      this.backends.delete(language);
+    }
+
+    // Start a fresh backend (will fetch latest version due to auto-update flags)
+    console.error(`[BackendManager] Starting fresh ${language} backend...`);
+    const state = await this.startBackend(language);
+    const newVersion = state.serverInfo?.version ?? null;
+
+    return { oldVersion, newVersion };
   }
 
   /**

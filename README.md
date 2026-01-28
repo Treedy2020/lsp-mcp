@@ -30,7 +30,7 @@ Use the **unified lsp-mcp server** that provides both Python and TypeScript supp
 ```
 
 This single server provides:
-- **Namespaced tools**: `python/hover`, `typescript/definition`, etc.
+- **Namespaced tools**: `python_hover`, `typescript_definition`, etc.
 - **Auto language detection**: Infers language from file extensions
 - **Auto-update**: Backends updated to latest versions on startup
 - **Lazy loading**: Backends start only when first used
@@ -71,7 +71,7 @@ This single server provides:
 │   └── README.md
 │
 ├── backends/
-│   ├── python/
+│   ├── python_
 │   │   ├── python-lsp-mcp/           # 🐍 Python backend (Rope + Pyright)
 │   │   │   ├── src/rope_mcp/
 │   │   │   │   ├── server.py         # MCP server
@@ -93,7 +93,7 @@ This single server provides:
 │   │   │
 │   │   └── fixtures/                 # Python test files
 │   │
-│   └── typescript/
+│   └── typescript_
 │       ├── typescript-lsp-mcp/       # 📘 TypeScript backend
 │       │   ├── src/
 │       │   │   ├── index.ts          # MCP server
@@ -210,8 +210,8 @@ The [skills/](./skills/) folder contains guidance for AI agents:
 │                                                                  │
 │  ┌────────────────────────────────────────────────────────────┐ │
 │  │                    Tool Router                              │ │
-│  │  python/hover → Python backend                             │ │
-│  │  typescript/definition → TypeScript backend                │ │
+│  │  python_hover → Python backend                             │ │
+│  │  typescript_definition → TypeScript backend                │ │
 │  └────────────────────────────────────────────────────────────┘ │
 │         │                                      │                 │
 │         ▼                                      ▼                 │

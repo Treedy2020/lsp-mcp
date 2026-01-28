@@ -1,16 +1,8 @@
 {
   "mcpServers": {
-    "pyright-mcp": {
-      "command": "npx",
-      "args": ["@treedy/pyright-mcp@latest"]
-    },
-    "python-lsp-mcp-local": {
-      "command": "uv",
-      "args": ["run", "--directory", "/Users/treedy/Project/PyLspMcp/python", "python-lsp-mcp"],
-      "env": {
-        "PYTHON_LSP_MCP_BACKEND": "pyright",
-        "MCP_RELOAD": "1"
-      }
+    "lsp-mcp": {
+      "command": "bun",
+      "args": ["/Users/treedy/Project/PyLspMcp/lsp-mcp/dist/index.js"]
     }
   }
 }

@@ -4,7 +4,7 @@
  * Supports environment variables and programmatic configuration.
  */
 
-export type Language = "python" | "typescript";
+export type Language = "python" | "typescript" | "vue";
 export type PythonProvider = "python-lsp-mcp" | "pyright-mcp";
 
 export interface BackendConfig {
@@ -21,7 +21,11 @@ export interface Config {
   typescript: {
     enabled: boolean;
   };
+  vue: {
+    enabled: boolean;
+  };
   autoUpdate: boolean; // If true, always fetch latest versions on startup
+  eagerStart: boolean; // If true, start all backends at startup (makes tools available immediately)
 }
 
 /**
@@ -35,9 +39,14 @@ export function loadConfig(): Config {
   ) as PythonProvider;
 
   const typescriptEnabled = getEnvBool("LSP_MCP_TYPESCRIPT_ENABLED", true);
+  const vueEnabled = getEnvBool("LSP_MCP_VUE_ENABLED", true);
 
   // Auto-update is enabled by default - always fetch latest versions
   const autoUpdate = getEnvBool("LSP_MCP_AUTO_UPDATE", true);
+
+  // Eager start - if true, start all backends at startup
+  // If false (default), backends are loaded on-demand via start_backend tool
+  const eagerStart = getEnvBool("LSP_MCP_EAGER_START", false);
 
   return {
     python: {
@@ -47,7 +56,11 @@ export function loadConfig(): Config {
     typescript: {
       enabled: typescriptEnabled,
     },
+    vue: {
+      enabled: vueEnabled,
+    },
     autoUpdate,
+    eagerStart,
   };
 }
 
@@ -82,6 +95,7 @@ const EXTENSION_MAP: Record<string, Language> = {
   ".mjs": "typescript",
   ".cts": "typescript",
   ".cjs": "typescript",
+  ".vue": "vue",
 };
 
 /**
@@ -102,7 +116,7 @@ export function parseToolName(
   if (parts.length !== 2) return null;
 
   const [lang, tool] = parts;
-  if (lang !== "python" && lang !== "typescript") return null;
+  if (lang !== "python" && lang !== "typescript" && lang !== "vue") return null;
 
   return { language: lang as Language, tool };
 }
@@ -150,6 +164,16 @@ export function getBackendCommand(
       args: autoUpdate
         ? ["--yes", "@treedy/typescript-lsp-mcp@latest"]
         : ["@treedy/typescript-lsp-mcp@latest"],
+    };
+  } else if (language === "vue") {
+    if (!config.vue.enabled) return null;
+
+    return {
+      enabled: true,
+      command: "npx",
+      args: autoUpdate
+        ? ["--yes", "@treedy/vue-lsp-mcp@latest"]
+        : ["@treedy/vue-lsp-mcp@latest"],
     };
   }
 

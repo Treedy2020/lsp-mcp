@@ -32,6 +32,7 @@ import {
   getRefactorEdits,
   getFunctionSignature,
   applyFileChanges,
+  getProjectConfig,
 } from "./ts-service.js";
 
 // Read version from package.json
@@ -513,7 +514,7 @@ server.tool(
 // ============================================================================
 server.tool(
   "status",
-  "Check TypeScript environment status for a project",
+  "Check TypeScript environment status for a project. Shows parsed config and any errors.",
   {
     file: z.string().describe("A TypeScript/JavaScript file path to check the project status for"),
   },
@@ -524,11 +525,71 @@ server.tool(
       const configPath = path.join(projectRoot, "tsconfig.json");
 
       const hasConfig = fs.existsSync(configPath);
-      let compilerOptions: Record<string, any> = {};
 
-      if (hasConfig) {
-        const configFile = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-        compilerOptions = configFile.compilerOptions || {};
+      // Get the parsed config (this triggers parsing if not cached)
+      const parsedConfig = getProjectConfig(projectRoot);
+
+      // Check node_modules for type packages
+      const nodeModulesPath = path.join(projectRoot, "node_modules");
+      const availableTypes: string[] = [];
+      if (fs.existsSync(nodeModulesPath)) {
+        // Check for common type packages
+        const typePackages = [
+          "vite/client.d.ts",
+          "@types/node",
+          "@vue/runtime-dom",
+        ];
+        for (const pkg of typePackages) {
+          if (fs.existsSync(path.join(nodeModulesPath, pkg))) {
+            availableTypes.push(pkg.replace("/client.d.ts", "/client"));
+          }
+        }
+      }
+
+      // Summarize key compiler options
+      const keyOptions: Record<string, any> = {};
+      if (parsedConfig?.options) {
+        const opts = parsedConfig.options;
+        keyOptions.target = opts.target;
+        keyOptions.module = opts.module;
+        keyOptions.moduleResolution = opts.moduleResolution;
+        keyOptions.types = opts.types;
+        keyOptions.typeRoots = opts.typeRoots;
+        keyOptions.strict = opts.strict;
+        keyOptions.baseUrl = opts.baseUrl;
+        keyOptions.paths = opts.paths;
+        // JSX configuration
+        keyOptions.jsx = opts.jsx;
+        keyOptions.jsxFactory = opts.jsxFactory;
+        keyOptions.jsxFragmentFactory = opts.jsxFragmentFactory;
+        keyOptions.jsxImportSource = opts.jsxImportSource;
+      }
+
+      // Get declaration files found
+      const declarationFiles = parsedConfig?.declarationFiles || [];
+      const detectedFrameworks = parsedConfig?.detectedFrameworks || [];
+
+      // Build tips based on detected configuration
+      const tips: string[] = [];
+      if (detectedFrameworks.includes("vite") && !keyOptions.types?.includes("vite/client")) {
+        tips.push("Add 'vite/client' to compilerOptions.types in tsconfig.json for import.meta.env support");
+      }
+      if (detectedFrameworks.includes("vue")) {
+        tips.push("Vue SFC (.vue files) require vue-tsc for full type checking. This LSP handles .ts/.tsx files.");
+      }
+      // Check for Vue TSX configuration
+      if (detectedFrameworks.includes("vue-tsx") || detectedFrameworks.includes("vue")) {
+        if (!keyOptions.jsx) {
+          tips.push("For Vue TSX: add 'jsx': 'preserve' to compilerOptions");
+        }
+        if (!keyOptions.jsxImportSource && keyOptions.jsx) {
+          tips.push("For Vue 3.3+ TSX: add 'jsxImportSource': 'vue' to compilerOptions for automatic JSX transform");
+        }
+      }
+      if (detectedFrameworks.includes("vue-tsx")) {
+        if (keyOptions.jsxImportSource === "vue") {
+          tips.push("Vue TSX is properly configured with jsxImportSource: 'vue'");
+        }
       }
 
       return {
@@ -539,9 +600,19 @@ server.tool(
             hasConfig,
             configPath: hasConfig ? configPath : null,
             typescript: {
-              version: require("typescript").version,
+              version: parsedConfig?.typescriptVersion || require("typescript").version,
+              source: parsedConfig?.typescriptSource || "bundled",
             },
-            compilerOptions: hasConfig ? compilerOptions : "default",
+            detectedFrameworks: detectedFrameworks.length > 0 ? detectedFrameworks : undefined,
+            availableTypes: availableTypes.length > 0 ? availableTypes : undefined,
+            parsedOptions: keyOptions,
+            configErrors: parsedConfig?.errors?.length ? parsedConfig.errors : undefined,
+            filesIncluded: parsedConfig?.fileNames?.length || 0,
+            declarationFiles: declarationFiles.length > 0 ? {
+              count: declarationFiles.length,
+              files: declarationFiles.map(f => path.relative(projectRoot, f)),
+            } : undefined,
+            tips: tips.length > 0 ? tips : undefined,
           }),
         }],
       };

@@ -1,26 +1,26 @@
-# @anthropic/lsp-mcp
+# @treedy/lsp-mcp
 
 Unified MCP server aggregating multi-language LSP backends for code intelligence. One server provides Python and TypeScript code intelligence through namespaced tools.
 
 ## Features
 
 - **Unified Entry Point**: Single MCP server for multiple languages
-- **Namespaced Tools**: `python/hover`, `typescript/definition`, etc.
-- **Auto Language Detection**: Infers language from file extensions
+- **Namespaced Tools**: `python_hover`, `typescript_definition`, etc.
+- **On-Demand Loading**: Backends are installed and started only when needed
+- **Dynamic Tool Registration**: Backend tools are discovered automatically
 - **Skill Prompts**: Best practices exposed as MCP prompts for agents
-- **Lazy Loading**: Backends start on first use
 - **Graceful Degradation**: Clear error messages when backends unavailable
 
 ## Installation
 
 ```bash
-npm install -g @anthropic/lsp-mcp
+npm install -g @treedy/lsp-mcp
 ```
 
 Or use directly with npx:
 
 ```bash
-npx @anthropic/lsp-mcp
+npx @treedy/lsp-mcp
 ```
 
 ## Configuration
@@ -34,7 +34,7 @@ Add to your MCP configuration:
   "mcpServers": {
     "lsp-mcp": {
       "command": "npx",
-      "args": ["@anthropic/lsp-mcp@latest"]
+      "args": ["@treedy/lsp-mcp@latest"]
     }
   }
 }
@@ -67,17 +67,17 @@ This ensures backends are always up-to-date when the server starts. To disable a
 
 | Tool | Description |
 |------|-------------|
-| `{lang}/hover` | Get type information and documentation |
-| `{lang}/definition` | Go to definition |
-| `{lang}/references` | Find all references |
-| `{lang}/completions` | Code completion suggestions |
-| `{lang}/diagnostics` | Type errors and warnings |
-| `{lang}/symbols` | Extract symbols from file |
-| `{lang}/rename` | Rename symbol |
-| `{lang}/search` | Regex pattern search |
-| `{lang}/signature_help` | Function signature help |
-| `{lang}/update_document` | Update file for incremental analysis |
-| `{lang}/status` | Backend status |
+| `{lang}_hover` | Get type information and documentation |
+| `{lang}_definition` | Go to definition |
+| `{lang}_references` | Find all references |
+| `{lang}_completions` | Code completion suggestions |
+| `{lang}_diagnostics` | Type errors and warnings |
+| `{lang}_symbols` | Extract symbols from file |
+| `{lang}_rename` | Rename symbol |
+| `{lang}_search` | Regex pattern search |
+| `{lang}_signature_help` | Function signature help |
+| `{lang}_update_document` | Update file for incremental analysis |
+| `{lang}_status` | Backend status |
 
 Replace `{lang}` with `python` or `typescript`.
 
@@ -85,19 +85,46 @@ Replace `{lang}` with `python` or `typescript`.
 
 | Tool | Description |
 |------|-------------|
-| `python/move` | Move function/class to another module |
-| `python/change_signature` | Modify function signature |
-| `python/function_signature` | Get current function signature |
-| `python/set_backend` | Switch between rope/pyright |
-| `python/set_python_path` | Set Python interpreter |
+| `python_move` | Move function/class to another module |
+| `python_change_signature` | Modify function signature |
+| `python_function_signature` | Get current function signature |
+| `python_set_backend` | Switch between rope/pyright |
+| `python_set_python_path` | Set Python interpreter |
 
 ### Meta Tools
 
 | Tool | Description |
 |------|-------------|
+| `list_backends` | List available backends and their status |
+| `start_backend` | Install and start a backend (downloads if needed) |
+| `update_backend` | Update a backend to the latest version |
 | `status` | Overall server and backend status with versions |
 | `check_versions` | Detailed version info for server and all backends |
 | `switch_python_backend` | Switch Python provider |
+
+## Quick Start
+
+1. **List available backends**:
+   ```
+   list_backends
+   ```
+
+2. **Start a backend** (this will download and install if needed):
+   ```
+   start_backend language=python
+   start_backend language=typescript
+   ```
+
+3. **Use backend tools** (available after starting):
+   ```
+   python_hover file=/path/to/file.py line=10 column=5
+   typescript_definition file=/path/to/file.ts line=15 column=10
+   ```
+
+4. **Update a backend** (when new version is available):
+   ```
+   update_backend language=python
+   ```
 
 ## Available Prompts (Skills)
 
@@ -142,7 +169,7 @@ Repeat until clean
 
 ```json
 {
-  "name": "python/hover",
+  "name": "python_hover",
   "arguments": {
     "file": "/path/to/file.py",
     "line": 10,
@@ -155,7 +182,7 @@ Repeat until clean
 
 ```json
 {
-  "name": "typescript/definition",
+  "name": "typescript_definition",
   "arguments": {
     "file": "/path/to/file.ts",
     "line": 15,
@@ -188,12 +215,12 @@ This will automatically route to the Python backend.
                               │ MCP (stdio)
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                        @anthropic/lsp-mcp                        │
+│                        @treedy/lsp-mcp                        │
 │                      (Unified MCP Server)                        │
 │                                                                  │
 │  ┌────────────────────────────────────────────────────────────┐ │
 │  │                    Tool Router                              │ │
-│  │  - Parse tool name (python/hover → {lang, tool})           │ │
+│  │  - Parse tool name (python_hover → {lang, tool})           │ │
 │  │  - Infer language from file extension                      │ │
 │  │  - Route to appropriate backend                            │ │
 │  └────────────────────────────────────────────────────────────┘ │

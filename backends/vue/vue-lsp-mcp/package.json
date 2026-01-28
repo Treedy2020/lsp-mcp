@@ -1,0 +1,45 @@
+{
+  "name": "@treedy/vue-lsp-mcp",
+  "version": "0.1.5",
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "MCP server for Vue Single File Components using Vue Language Server",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "vue-lsp-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "bun run build.ts",
+    "dev": "bun run --watch src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  },
+  "peerDependencies": {
+    "@vue/language-server": ">=2.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@vue/language-server": {
+      "optional": true
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "keywords": [
+    "mcp",
+    "vue",
+    "lsp",
+    "language-server",
+    "volar"
+  ],
+  "license": "MIT"
+}

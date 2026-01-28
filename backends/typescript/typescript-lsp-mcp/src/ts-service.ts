@@ -1,18 +1,78 @@
 /**
  * TypeScript Language Service wrapper.
  * Uses the official TypeScript compiler API for code intelligence.
+ *
+ * Attempts to use the project's local TypeScript installation first,
+ * falling back to the bundled version if not found.
  */
 
-import ts from "typescript";
+import bundledTs from "typescript";
 import * as path from "path";
 import * as fs from "fs";
+import { createRequire } from "module";
+
+// Type alias for TypeScript module
+type TypeScriptModule = typeof bundledTs;
 
 // Cache for language services per project
-const serviceCache = new Map<string, ts.LanguageService>();
+const serviceCache = new Map<string, bundledTs.LanguageService>();
 const documentVersions = new Map<string, number>();
 const documentContents = new Map<string, string>();
 // Track files that have been accessed (per project)
 const accessedFilesPerProject = new Map<string, Set<string>>();
+// Cache for TypeScript modules per project (to use project's local TS)
+const tsModuleCache = new Map<string, { ts: TypeScriptModule; version: string; source: "project" | "bundled" }>();
+// Cache for parsed configs (for debugging)
+const configCache = new Map<string, {
+  options: bundledTs.CompilerOptions;
+  errors: string[];
+  fileNames: string[];
+  declarationFiles: string[];
+  detectedFrameworks: string[];
+  typescriptVersion: string;
+  typescriptSource: "project" | "bundled";
+}>();
+
+/**
+ * Get the TypeScript module to use for a project.
+ * Prefers the project's local TypeScript installation.
+ */
+function getTypeScriptForProject(projectRoot: string): { ts: TypeScriptModule; version: string; source: "project" | "bundled" } {
+  // Check cache first
+  if (tsModuleCache.has(projectRoot)) {
+    return tsModuleCache.get(projectRoot)!;
+  }
+
+  // Try to load project's local TypeScript
+  const localTsPath = path.join(projectRoot, "node_modules", "typescript");
+  if (fs.existsSync(localTsPath)) {
+    try {
+      // Use createRequire to load from the project's node_modules
+      const require = createRequire(path.join(projectRoot, "package.json"));
+      const localTs = require("typescript") as TypeScriptModule;
+      const result = {
+        ts: localTs,
+        version: localTs.version,
+        source: "project" as const,
+      };
+      tsModuleCache.set(projectRoot, result);
+      console.error(`[ts-service] Using project TypeScript ${localTs.version} from ${localTsPath}`);
+      return result;
+    } catch (error) {
+      console.error(`[ts-service] Failed to load project TypeScript, using bundled:`, error);
+    }
+  }
+
+  // Fall back to bundled TypeScript
+  const result = {
+    ts: bundledTs,
+    version: bundledTs.version,
+    source: "bundled" as const,
+  };
+  tsModuleCache.set(projectRoot, result);
+  console.error(`[ts-service] Using bundled TypeScript ${bundledTs.version} (no local installation found)`);
+  return result;
+}
 
 /**
  * Register a file as accessed for a project.
@@ -26,6 +86,7 @@ function registerFile(projectRoot: string, filePath: string): void {
 
 /**
  * Find the project root by looking for tsconfig.json
+ * Also returns the path to the tsconfig.json file found
  */
 export function findProjectRoot(filePath: string): string {
   let dir = path.dirname(filePath);
@@ -42,19 +103,98 @@ export function findProjectRoot(filePath: string): string {
 }
 
 /**
+ * Find all .d.ts files in the project (excluding node_modules)
+ */
+function findDeclarationFiles(projectRoot: string): string[] {
+  const dtsFiles: string[] = [];
+
+  function scanDir(dir: string, depth: number = 0): void {
+    // Limit depth to avoid scanning too deep
+    if (depth > 5) return;
+
+    try {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name);
+
+        // Skip node_modules, dist, build directories
+        if (entry.isDirectory()) {
+          if (!["node_modules", "dist", "build", ".git", ".next", ".nuxt"].includes(entry.name)) {
+            scanDir(fullPath, depth + 1);
+          }
+        } else if (entry.isFile() && entry.name.endsWith(".d.ts")) {
+          dtsFiles.push(fullPath);
+        }
+      }
+    } catch {
+      // Ignore permission errors
+    }
+  }
+
+  scanDir(projectRoot);
+  return dtsFiles;
+}
+
+/**
+ * Detect project frameworks and return relevant type packages to include
+ */
+function detectFrameworkTypes(projectRoot: string): string[] {
+  const types: string[] = [];
+  const nodeModulesPath = path.join(projectRoot, "node_modules");
+
+  if (!fs.existsSync(nodeModulesPath)) {
+    return types;
+  }
+
+  // Check for Vite
+  const hasVite = fs.existsSync(path.join(projectRoot, "vite.config.ts")) ||
+                  fs.existsSync(path.join(projectRoot, "vite.config.js")) ||
+                  fs.existsSync(path.join(projectRoot, "vite.config.mts"));
+  if (hasVite && fs.existsSync(path.join(nodeModulesPath, "vite", "client.d.ts"))) {
+    types.push("vite/client");
+  }
+
+  // Check for Vue
+  const hasVue = fs.existsSync(path.join(nodeModulesPath, "vue")) ||
+                 fs.existsSync(path.join(projectRoot, "src", "App.vue"));
+  if (hasVue) {
+    // Vue 3 types
+    if (fs.existsSync(path.join(nodeModulesPath, "@vue", "runtime-core"))) {
+      // Vue types are usually auto-included, but we ensure they're available
+    }
+  }
+
+  // Check for React
+  const hasReact = fs.existsSync(path.join(nodeModulesPath, "react"));
+  if (hasReact && fs.existsSync(path.join(nodeModulesPath, "@types", "react"))) {
+    // React types are in @types/react
+  }
+
+  // Check for Node.js types
+  if (fs.existsSync(path.join(nodeModulesPath, "@types", "node"))) {
+    types.push("node");
+  }
+
+  return types;
+}
+
+/**
  * Get or create a language service for a project.
  */
-export function getLanguageService(projectRoot: string): ts.LanguageService {
+export function getLanguageService(projectRoot: string): bundledTs.LanguageService {
   if (serviceCache.has(projectRoot)) {
     return serviceCache.get(projectRoot)!;
   }
 
+  // Get TypeScript module for this project (prefers local installation)
+  const { ts, version: tsVersion, source: tsSource } = getTypeScriptForProject(projectRoot);
+
   // Read tsconfig.json if it exists
   const configPath = path.join(projectRoot, "tsconfig.json");
-  let compilerOptions: ts.CompilerOptions = {
-    target: ts.ScriptTarget.ESNext,
-    module: ts.ModuleKind.ESNext,
-    moduleResolution: ts.ModuleResolutionKind.Bundler,
+  let compilerOptions: bundledTs.CompilerOptions = {
+    target: bundledTs.ScriptTarget.ESNext,
+    module: bundledTs.ModuleKind.ESNext,
+    moduleResolution: bundledTs.ModuleResolutionKind.Bundler,
     esModuleInterop: true,
     strict: true,
     skipLibCheck: true,
@@ -64,22 +204,91 @@ export function getLanguageService(projectRoot: string): ts.LanguageService {
   };
 
   let rootFiles: string[] = [];
+  const configErrors: string[] = [];
+
+  // Find all .d.ts files in the project for type declarations
+  const projectDtsFiles = findDeclarationFiles(projectRoot);
 
   if (fs.existsSync(configPath)) {
     const configFile = ts.readConfigFile(configPath, ts.sys.readFile);
-    if (!configFile.error) {
+    if (configFile.error) {
+      configErrors.push(`Failed to read tsconfig.json: ${ts.flattenDiagnosticMessageText(configFile.error.messageText, "\n")}`);
+    } else {
       const parsed = ts.parseJsonConfigFileContent(
         configFile.config,
         ts.sys,
         projectRoot
       );
+
+      // Collect any parsing errors
+      if (parsed.errors.length > 0) {
+        for (const err of parsed.errors) {
+          configErrors.push(ts.flattenDiagnosticMessageText(err.messageText, "\n"));
+        }
+      }
+
       compilerOptions = parsed.options;
       rootFiles = parsed.fileNames;
+
+      // Auto-detect and add framework types
+      const frameworkTypes = detectFrameworkTypes(projectRoot);
+      for (const type of frameworkTypes) {
+        if (!compilerOptions.types?.includes(type)) {
+          compilerOptions.types = [...(compilerOptions.types || []), type];
+        }
+      }
+
+      // Include project .d.ts files that might not be in rootFiles
+      for (const dtsFile of projectDtsFiles) {
+        if (!rootFiles.includes(dtsFile)) {
+          rootFiles.push(dtsFile);
+        }
+      }
     }
+  } else {
+    // No tsconfig.json - include .d.ts files anyway
+    rootFiles = [...projectDtsFiles];
   }
 
-  // Create the language service host
-  const host: ts.LanguageServiceHost = {
+  // Detect frameworks for status reporting
+  const detectedFrameworks: string[] = [];
+  if (fs.existsSync(path.join(projectRoot, "vite.config.ts")) ||
+      fs.existsSync(path.join(projectRoot, "vite.config.js")) ||
+      fs.existsSync(path.join(projectRoot, "vite.config.mts"))) {
+    detectedFrameworks.push("vite");
+  }
+  if (fs.existsSync(path.join(projectRoot, "vue.config.js")) ||
+      fs.existsSync(path.join(projectRoot, "src", "App.vue")) ||
+      fs.existsSync(path.join(projectRoot, "node_modules", "vue"))) {
+    detectedFrameworks.push("vue");
+  }
+  // Detect Vue TSX support
+  if (fs.existsSync(path.join(projectRoot, "node_modules", "@vitejs", "plugin-vue-jsx")) ||
+      fs.existsSync(path.join(projectRoot, "node_modules", "@vue", "babel-plugin-jsx"))) {
+    detectedFrameworks.push("vue-tsx");
+  }
+  if (fs.existsSync(path.join(projectRoot, "next.config.js")) ||
+      fs.existsSync(path.join(projectRoot, "next.config.ts"))) {
+    detectedFrameworks.push("next");
+  }
+  if (fs.existsSync(path.join(projectRoot, "nuxt.config.ts")) ||
+      fs.existsSync(path.join(projectRoot, "nuxt.config.js"))) {
+    detectedFrameworks.push("nuxt");
+  }
+
+  // Store config info for debugging
+  configCache.set(projectRoot, {
+    options: compilerOptions,
+    errors: configErrors,
+    fileNames: rootFiles,
+    declarationFiles: projectDtsFiles,
+    detectedFrameworks,
+    typescriptVersion: tsVersion,
+    typescriptSource: tsSource,
+  });
+
+  // Create the language service host (using the project's TypeScript)
+  const host: bundledTs.LanguageServiceHost = {
     getScriptFileNames: () => {
       // Include config files, open documents, and accessed files
       const openFiles = Array.from(documentContents.keys()).filter(
@@ -106,16 +315,33 @@ export function getLanguageService(projectRoot: string): ts.LanguageService {
     getCurrentDirectory: () => projectRoot,
     getCompilationSettings: () => compilerOptions,
     getDefaultLibFileName: (options) => ts.getDefaultLibFilePath(options),
-    fileExists: ts.sys.fileExists,
-    readFile: ts.sys.readFile,
-    readDirectory: ts.sys.readDirectory,
-    directoryExists: ts.sys.directoryExists,
-    getDirectories: ts.sys.getDirectories,
+    fileExists: bundledTs.sys.fileExists,
+    readFile: bundledTs.sys.readFile,
+    readDirectory: bundledTs.sys.readDirectory,
+    directoryExists: bundledTs.sys.directoryExists,
+    getDirectories: bundledTs.sys.getDirectories,
   };
 
   const service = ts.createLanguageService(host, ts.createDocumentRegistry());
   serviceCache.set(projectRoot, service);
   return service;
+}
+
+/**
+ * Get the cached project configuration for debugging.
+ */
+export function getProjectConfig(projectRoot: string): {
+  options: bundledTs.CompilerOptions;
+  errors: string[];
+  fileNames: string[];
+  declarationFiles: string[];
+  detectedFrameworks: string[];
+  typescriptVersion: string;
+  typescriptSource: "project" | "bundled";
+} | undefined {
+  // Ensure the service is initialized
+  getLanguageService(projectRoot);
+  return configCache.get(projectRoot);
 }
 
 /**
@@ -184,7 +410,7 @@ export function getFileContent(filePath: string): string {
 /**
  * Get a language service with the file registered.
  */
-function getServiceForFile(filePath: string): { service: ts.LanguageService; absPath: string; projectRoot: string } {
+function getServiceForFile(filePath: string): { service: bundledTs.LanguageService; absPath: string; projectRoot: string } {
   const absPath = path.resolve(filePath);
   const projectRoot = findProjectRoot(absPath);
   registerFile(projectRoot, absPath);
@@ -201,7 +427,7 @@ export function getQuickInfo(
   filePath: string,
   line: number,
   column: number
-): ts.QuickInfo | undefined {
+): bundledTs.QuickInfo | undefined {
   const { service, absPath } = getServiceForFile(filePath);
   const content = getFileContent(absPath);
   const offset = positionToOffset(content, line, column);
@@ -215,7 +441,7 @@ export function getDefinition(
   filePath: string,
   line: number,
   column: number
-): readonly ts.DefinitionInfo[] | undefined {
+): readonly bundledTs.DefinitionInfo[] | undefined {
   const { service, absPath } = getServiceForFile(filePath);
   const content = getFileContent(absPath);
   const offset = positionToOffset(content, line, column);
@@ -229,7 +455,7 @@ export function getReferences(
   filePath: string,
   line: number,
   column: number
-): ts.ReferenceEntry[] | undefined {
+): bundledTs.ReferenceEntry[] | undefined {
   const { service, absPath } = getServiceForFile(filePath);
   const content = getFileContent(absPath);
   const offset = positionToOffset(content, line, column);
@@ -243,7 +469,7 @@ export function getCompletions(
   filePath: string,
   line: number,
   column: number
-): ts.CompletionInfo | undefined {
+): bundledTs.CompletionInfo | undefined {
   const { service, absPath } = getServiceForFile(filePath);
   const content = getFileContent(absPath);
   const offset = positionToOffset(content, line, column);
@@ -257,7 +483,7 @@ export function getSignatureHelp(
   filePath: string,
   line: number,
   column: number
-): ts.SignatureHelpItems | undefined {
+): bundledTs.SignatureHelpItems | undefined {
   const { service, absPath } = getServiceForFile(filePath);
   const content = getFileContent(absPath);
   const offset = positionToOffset(content, line, column);
@@ -267,7 +493,7 @@ export function getSignatureHelp(
 /**
  * Get document symbols.
  */
-export function getDocumentSymbols(filePath: string): ts.NavigationTree {
+export function getDocumentSymbols(filePath: string): bundledTs.NavigationTree {
   const { service, absPath } = getServiceForFile(filePath);
   return service.getNavigationTree(absPath);
 }
@@ -275,7 +501,7 @@ export function getDocumentSymbols(filePath: string): ts.NavigationTree {
 /**
  * Get diagnostics.
  */
-export function getDiagnostics(filePath: string): ts.Diagnostic[] {
+export function getDiagnostics(filePath: string): bundledTs.Diagnostic[] {
   const { service, absPath } = getServiceForFile(filePath);
 
   const syntactic = service.getSyntacticDiagnostics(absPath);
@@ -292,7 +518,7 @@ export function getRenameLocations(
   filePath: string,
   line: number,
   column: number
-): readonly ts.RenameLocation[] | undefined {
+): readonly bundledTs.RenameLocation[] | undefined {
   const { service, absPath } = getServiceForFile(filePath);
   const content = getFileContent(absPath);
   const offset = positionToOffset(content, line, column);
@@ -308,7 +534,7 @@ export function getRenameLocations(
 /**
  * Format diagnostic message.
  */
-export function formatDiagnostic(diag: ts.Diagnostic): {
+export function formatDiagnostic(diag: bundledTs.Diagnostic): {
   file: string;
   line: number;
   column: number;
@@ -316,11 +542,11 @@ export function formatDiagnostic(diag: ts.Diagnostic): {
   message: string;
   code: number;
 } {
-  const message = ts.flattenDiagnosticMessageText(diag.messageText, "\n");
+  const message = bundledTs.flattenDiagnosticMessageText(diag.messageText, "\n");
   const severity =
-    diag.category === ts.DiagnosticCategory.Error
+    diag.category === bundledTs.DiagnosticCategory.Error
       ? "error"
-      : diag.category === ts.DiagnosticCategory.Warning
+      : diag.category === bundledTs.DiagnosticCategory.Warning
       ? "warning"
       : "info";
 
@@ -352,7 +578,7 @@ export function formatDiagnostic(diag: ts.Diagnostic): {
  * Display parts to string.
  */
 export function displayPartsToString(
-  parts: ts.SymbolDisplayPart[] | undefined
+  parts: bundledTs.SymbolDisplayPart[] | undefined
 ): string {
   if (!parts) return "";
   return parts.map((p) => p.text).join("");
@@ -365,7 +591,7 @@ export function getApplicableRefactors(
   filePath: string,
   line: number,
   column: number
-): ts.ApplicableRefactorInfo[] {
+): bundledTs.ApplicableRefactorInfo[] {
   const { service, absPath } = getServiceForFile(filePath);
   const content = getFileContent(absPath);
   const offset = positionToOffset(content, line, column);
@@ -381,7 +607,7 @@ export function getRefactorEdits(
   column: number,
   refactorName: string,
   actionName: string
-): ts.RefactorEditInfo | undefined {
+): bundledTs.RefactorEditInfo | undefined {
   const { service, absPath } = getServiceForFile(filePath);
   const content = getFileContent(absPath);
   const offset = positionToOffset(content, line, column);
@@ -410,10 +636,10 @@ export function getFunctionSignature(
   if (!info) return undefined;
 
   // Check if it's a function/method
-  if (info.kind !== ts.ScriptElementKind.functionElement &&
-      info.kind !== ts.ScriptElementKind.memberFunctionElement &&
-      info.kind !== ts.ScriptElementKind.constructorImplementationElement &&
-      info.kind !== ts.ScriptElementKind.callSignatureElement) {
+  if (info.kind !== bundledTs.ScriptElementKind.functionElement &&
+      info.kind !== bundledTs.ScriptElementKind.memberFunctionElement &&
+      info.kind !== bundledTs.ScriptElementKind.constructorImplementationElement &&
+      info.kind !== bundledTs.ScriptElementKind.callSignatureElement) {
     return undefined;
   }
 
@@ -477,7 +703,7 @@ export function getFunctionSignature(
  * Apply file changes to disk.
  */
 export function applyFileChanges(
-  changes: ts.FileTextChanges[]
+  changes: bundledTs.FileTextChanges[]
 ): { changedFiles: string[]; created: string[]; deleted: string[] } {
   const changedFiles: string[] = [];
   const created: string[] = [];

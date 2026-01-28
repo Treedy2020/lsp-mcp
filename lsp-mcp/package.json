@@ -1,6 +1,6 @@
 {
-  "name": "@anthropic/lsp-mcp",
-  "version": "0.1.0",
+  "name": "@treedy/lsp-mcp",
+  "version": "0.1.6",
   "description": "Unified MCP server aggregating multi-language LSP backends for code intelligence",
   "type": "module",
   "main": "dist/index.js",
@@ -31,7 +31,7 @@
     "ai",
     "code-intelligence"
   ],
-  "author": "anthropic",
+  "author": "treedy",
   "license": "MIT",
   "engines": {
     "node": ">=18.0.0"
