@@ -329,7 +329,7 @@ server.tool(
   },
   async ({ file, content }) => {
     try {
-      updateDocument(file, content);
+      await updateDocument(file, content);
       return {
         content: [{
           type: "text",

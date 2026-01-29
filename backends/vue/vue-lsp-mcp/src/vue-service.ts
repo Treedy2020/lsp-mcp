@@ -8,6 +8,7 @@
 import * as path from "path";
 import * as fs from "fs";
 import { spawn, ChildProcess } from "child_process";
+import { createRequire } from "module";
 
 // Document content cache
 const documentContents = new Map<string, string>();
@@ -15,6 +16,21 @@ const documentVersions = new Map<string, number>();
 
 // LSP message ID counter
 let messageId = 0;
+
+// Track active connections for cleanup
+const activeConnections = new Set<LspConnection>();
+
+// Cleanup on exit
+process.on('exit', () => {
+  for (const conn of activeConnections) {
+    try {
+      conn.process.kill();
+      if (conn.tsserver) conn.tsserver.kill();
+    } catch (e) {
+      // Ignore errors during cleanup
+    }
+  }
+});
 
 // Diagnostic from LSP
 interface LspDiagnostic {
@@ -50,38 +66,58 @@ function spawnTsServer(conn: LspConnection): void {
   if (conn.tsserver) return;
 
   const projectRoot = conn.projectRoot;
+  const projectRequire = createRequire(path.join(projectRoot, "package.json"));
 
   // Find tsserver path
-  const tsserverPaths = [
-    path.join(projectRoot, "node_modules", "typescript", "lib", "tsserver.js"),
-    path.join(projectRoot, "node_modules", ".bin", "tsserver"),
-  ];
-
   let tsserverPath: string | null = null;
-  for (const p of tsserverPaths) {
-    if (fs.existsSync(p)) {
-      tsserverPath = p;
-      break;
+  try {
+    const typescriptPath = projectRequire.resolve("typescript");
+    tsserverPath = path.join(path.dirname(typescriptPath), "tsserver.js");
+  } catch (e) {
+    // Fallback to searching node_modules manually if resolve fails
+    const commonPaths = [
+      path.join(projectRoot, "node_modules", "typescript", "lib", "tsserver.js"),
+      path.join(projectRoot, "node_modules", ".bin", "tsserver"),
+    ];
+    for (const p of commonPaths) {
+      if (fs.existsSync(p)) {
+        tsserverPath = p;
+        break;
+      }
     }
   }
 
-  if (!tsserverPath) {
+  if (!tsserverPath || !fs.existsSync(tsserverPath)) {
     console.error("[DEBUG] tsserver not found, Volar 3.x features may not work");
     return;
   }
 
   // Find Vue TypeScript plugin
-  const vuePluginPaths = [
-    path.join(projectRoot, "node_modules", "@vue", "typescript-plugin"),
-    path.join(projectRoot, "node_modules", "@vue", "language-core", "dist", "languagePlugin.js"),
-  ];
-
   let vuePluginPath: string | null = null;
-  for (const p of vuePluginPaths) {
-    if (fs.existsSync(p)) {
-      vuePluginPath = p;
-      break;
+  try {
+    // Try newer @vue/typescript-plugin
+    try {
+        const pkgPath = projectRequire.resolve("@vue/typescript-plugin/package.json");
+        vuePluginPath = path.dirname(pkgPath);
+    } catch {
+        // Try older path or other variations
+        const langCorePath = projectRequire.resolve("@vue/language-core");
+        // Usually plugins are configured differently in newer versions, 
+        // but let's try to find a valid plugin entry.
+        // For simplicity in this fix, we stick to checking existence if resolve fails or returns unexpected.
+         const commonPluginPaths = [
+            path.join(projectRoot, "node_modules", "@vue", "typescript-plugin"),
+            path.join(projectRoot, "node_modules", "@vue", "language-core", "dist", "languagePlugin.js"),
+        ];
+        for (const p of commonPluginPaths) {
+            if (fs.existsSync(p)) {
+                vuePluginPath = p;
+                break;
+            }
+        }
     }
+  } catch (e) {
+      // Ignore
   }
 
 
@@ -107,7 +143,7 @@ function spawnTsServer(conn: LspConnection): void {
   });
 
   conn.tsserver.stderr?.on("data", (data: Buffer) => {
-    console.error("[tsserver]", data.toString().trim());
+    // console.error("[tsserver]", data.toString().trim());
   });
 
   conn.tsserver.on("error", (error) => {
@@ -115,7 +151,6 @@ function spawnTsServer(conn: LspConnection): void {
   });
 
   conn.tsserver.on("exit", (code) => {
-    console.error(`[tsserver] Exited with code: ${code}`);
     conn.tsserver = undefined;
   });
 
@@ -482,24 +517,35 @@ async function getConnection(projectRoot: string): Promise<LspConnection> {
     return connectionCache.get(projectRoot)!;
   }
 
-  // Find vue-language-server
-  const vueServerPaths = [
-    path.join(projectRoot, "node_modules", "@vue", "language-server", "bin", "vue-language-server.js"),
-    path.join(projectRoot, "node_modules", ".bin", "vue-language-server"),
-  ];
-
+  const projectRequire = createRequire(path.join(projectRoot, "package.json"));
   let serverPath: string | null = null;
-  for (const p of vueServerPaths) {
-    if (fs.existsSync(p)) {
-      serverPath = p;
-      break;
+  let args: string[] = [];
+
+  // 1. Try resolving @vue/language-server from the project
+  try {
+    const pkgPath = projectRequire.resolve("@vue/language-server/package.json");
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+    const binPath = pkg.bin ? (typeof pkg.bin === "string" ? pkg.bin : pkg.bin["vue-language-server"]) : "bin/vue-language-server.js";
+    serverPath = path.join(path.dirname(pkgPath), binPath);
+    args = ["node", serverPath, "--stdio"];
+  } catch (e) {
+    // 2. Try looking in node_modules manually (fallback)
+    const possiblePaths = [
+        path.join(projectRoot, "node_modules", "@vue", "language-server", "bin", "vue-language-server.js"),
+    ];
+    for (const p of possiblePaths) {
+        if (fs.existsSync(p)) {
+            serverPath = p;
+            args = ["node", serverPath, "--stdio"];
+            break;
+        }
+    }
+
+    // 3. Fallback to npx if not found
+    if (!serverPath) {
+        args = ["npx", "@vue/language-server", "--stdio"];
     }
   }
-
-  // If not found locally, try to use npx
-  const args = serverPath
-    ? ["node", serverPath, "--stdio"]
-    : ["npx", "@vue/language-server", "--stdio"];
 
   const proc = spawn(args[0], args.slice(1), {
     cwd: projectRoot,
@@ -517,6 +563,8 @@ async function getConnection(projectRoot: string): Promise<LspConnection> {
     projectRoot,
   };
 
+  activeConnections.add(conn);
+
   proc.stdout?.on("data", (data: Buffer) => {
     conn.buffer += data.toString();
     parseMessages(conn);
@@ -524,7 +572,7 @@ async function getConnection(projectRoot: string): Promise<LspConnection> {
 
   proc.stderr?.on("data", (data: Buffer) => {
     // Log errors for debugging
-    console.error("[vue-language-server]", data.toString());
+    // console.error("[vue-language-server]", data.toString());
   });
 
   proc.on("error", (error) => {
@@ -533,22 +581,28 @@ async function getConnection(projectRoot: string): Promise<LspConnection> {
 
   proc.on("exit", (code) => {
     connectionCache.delete(projectRoot);
+    activeConnections.delete(conn);
   });
 
   connectionCache.set(projectRoot, conn);
 
   // Find TypeScript SDK path
-  const tsSdkPaths = [
-    path.join(projectRoot, "node_modules", "typescript", "lib"),
-    path.join(projectRoot, "node_modules", "typescript"),
-  ];
-
   let tsSdkPath: string | undefined;
-  for (const p of tsSdkPaths) {
-    if (fs.existsSync(p)) {
-      tsSdkPath = p;
-      break;
-    }
+  try {
+    const tsPath = projectRequire.resolve("typescript");
+    tsSdkPath = path.dirname(tsPath); // usually lib
+  } catch {
+      // fallback
+      const tsPaths = [
+        path.join(projectRoot, "node_modules", "typescript", "lib"),
+        path.join(projectRoot, "node_modules", "typescript"),
+      ];
+      for (const p of tsPaths) {
+          if (fs.existsSync(p)) {
+              tsSdkPath = p;
+              break;
+          }
+      }
   }
 
   // Initialize LSP
@@ -564,6 +618,12 @@ async function getConnection(projectRoot: string): Promise<LspConnection> {
         definition: {},
         references: {},
         publishDiagnostics: {},
+        synchronization: {
+            didOpen: true,
+            didChange: true,
+            didSave: true,
+            dynamicRegistration: true
+        }
       },
       workspace: {
         configuration: true,
@@ -621,11 +681,33 @@ async function ensureDocumentOpen(conn: LspConnection, filePath: string): Promis
 
 /**
  * Update document content for incremental analysis
+ * Now properly synchronizes with LSP server
  */
-export function updateDocument(filePath: string, content: string): void {
+export async function updateDocument(filePath: string, content: string): Promise<void> {
   const absPath = path.resolve(filePath);
+  const projectRoot = findProjectRoot(filePath);
+  
+  // Update local cache
   documentContents.set(absPath, content);
-  documentVersions.set(absPath, (documentVersions.get(absPath) || 0) + 1);
+  const newVersion = (documentVersions.get(absPath) || 0) + 1;
+  documentVersions.set(absPath, newVersion);
+
+  // If we have an active connection, sync with server
+  if (connectionCache.has(projectRoot)) {
+      const conn = connectionCache.get(projectRoot)!;
+      if (conn.openedDocuments.has(absPath)) {
+          // Send change notification
+          sendNotification(conn, "textDocument/didChange", {
+              textDocument: {
+                  uri: toUri(absPath),
+                  version: newVersion
+              },
+              contentChanges: [
+                  { text: content } // Full text sync for simplicity and robustness
+              ]
+          });
+      }
+  }
 }
 
 /**
@@ -869,13 +951,43 @@ interface Diagnostic {
 }
 
 /**
- * Get diagnostics for a file using vue-tsc
+ * Get diagnostics for a file
+ * 
+ * Strategy:
+ * 1. For single files, prefer LSP diagnostics (faster, incremental)
+ * 2. Fallback to vue-tsc only if LSP unavailable or for project-wide checks (if needed)
  */
 export async function getDiagnostics(filePath: string): Promise<Diagnostic[]> {
   const projectRoot = findProjectRoot(filePath);
   const absPath = path.resolve(filePath);
+  
+  // Try to use LSP first for single file
+  try {
+      const conn = await getConnection(projectRoot);
+      await ensureDocumentOpen(conn, absPath);
+      
+      // Wait briefly for diagnostics to arrive (push model)
+      // If we already have them in cache, return immediately
+      // Otherwise wait up to 2 seconds
+      let attempts = 0;
+      while (attempts < 10) {
+          if (conn.diagnosticsCache.has(absPath)) {
+              return conn.diagnosticsCache.get(absPath)!;
+          }
+          await new Promise(r => setTimeout(r, 200));
+          attempts++;
+      }
+      
+      // If we still have no diagnostics, it might mean there are no errors,
+      // or the server is slow. Return empty or cached if available.
+      return conn.diagnosticsCache.get(absPath) || [];
+      
+  } catch (e) {
+      // If LSP fails, fallback to vue-tsc logic (legacy)
+      console.error("LSP diagnostics failed, falling back to vue-tsc spawn:", e);
+  }
 
-  // Try vue-tsc for diagnostics (more reliable than LSP push diagnostics)
+  // Old heavy logic (fallback)
   const vueTscPaths = [
     path.join(projectRoot, "node_modules", ".bin", "vue-tsc"),
     path.join(projectRoot, "node_modules", "vue-tsc", "bin", "vue-tsc.js"),
@@ -890,7 +1002,6 @@ export async function getDiagnostics(filePath: string): Promise<Diagnostic[]> {
   }
 
   if (!vueTscPath) {
-    // Fall back to trying npx
     vueTscPath = "npx";
   }
 
