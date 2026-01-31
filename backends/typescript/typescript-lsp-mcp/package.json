@@ -1,6 +1,6 @@
 {
   "name": "@treedy/typescript-lsp-mcp",
-  "version": "0.1.3",
+  "version": "0.1.5",
   "description": "MCP server providing TypeScript/JavaScript code intelligence using the official TypeScript Language Service",
   "type": "module",
   "main": "dist/index.js",

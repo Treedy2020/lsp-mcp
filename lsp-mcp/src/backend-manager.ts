@@ -160,12 +160,31 @@ export class BackendManager {
       throw new Error(`${language} backend is not ready: ${state.lastError}`);
     }
 
-    const result = await state.client.callTool({
-      name: toolName,
-      arguments: args,
-    });
-
-    return result as { content: Array<{ type: "text"; text: string }> };
+    try {
+      const result = await state.client.callTool({
+        name: toolName,
+        arguments: args,
+      });
+      return result as { content: Array<{ type: "text"; text: string }> };
+    } catch (error) {
+      state.status = "error";
+      state.lastError = String(error);
+      console.error(`[BackendManager] ${language} tool call failed, attempting restart:`, error);
+      try {
+        await this.restartBackend(language);
+        const restarted = this.backends.get(language);
+        if (!restarted || restarted.status !== "ready") {
+          throw new Error(`${language} backend failed to restart`);
+        }
+        const result = await restarted.client.callTool({
+          name: toolName,
+          arguments: args,
+        });
+        return result as { content: Array<{ type: "text"; text: string }> };
+      } catch (restartError) {
+        throw new Error(`${language} backend error after restart: ${restartError}`);
+      }
+    }
   }
 
   /**
@@ -276,6 +295,7 @@ export class BackendManager {
   async restartBackend(language: Language): Promise<{ oldVersion: string | null; newVersion: string | null }> {
     const existing = this.backends.get(language);
     const oldVersion = existing?.serverInfo?.version ?? null;
+    const restartCount = (existing?.restartCount ?? 0) + 1;
 
     // Stop the existing backend if running
     if (existing) {
@@ -292,6 +312,7 @@ export class BackendManager {
     // Start a fresh backend (will fetch latest version due to auto-update flags)
     console.error(`[BackendManager] Starting fresh ${language} backend...`);
     const state = await this.startBackend(language);
+    state.restartCount = restartCount;
     const newVersion = state.serverInfo?.version ?? null;
 
     return { oldVersion, newVersion };

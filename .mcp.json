@@ -1,8 +1,10 @@
 {
   "mcpServers": {
-    "lsp-mcp": {
+    "lsp-mcp-local": {
       "command": "bun",
-      "args": ["/Users/treedy/Project/PyLspMcp/lsp-mcp/dist/index.js"]
+      "args": [
+        "./lsp-mcp/src/index.ts"
+      ]
     }
   }
 }

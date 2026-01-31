@@ -1,6 +1,6 @@
 {
   "name": "@treedy/pyright-mcp",
-  "version": "1.1.5",
+  "version": "1.1.6",
   "description": "MCP server exposing Pyright LSP features for Python code intelligence",
   "type": "module",
   "main": "dist/index.js",

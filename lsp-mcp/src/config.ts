@@ -1,3 +1,7 @@
+import * as path from "path";
+import * as fs from "fs";
+import { fileURLToPath } from "url";
+
 /**
  * Configuration system for the unified LSP MCP server.
  *
@@ -122,7 +126,37 @@ export function parseToolName(
 }
 
 /**
+ * Resolve the path to a bundled backend.
+ * Checks if dist/bundled/<name> exists relative to the current script.
+ */
+function resolveBundledBackend(name: string): string | null {
+  try {
+    const currentDir = path.dirname(fileURLToPath(import.meta.url));
+    // Check if we are in dist/ (production) or src/ (dev)
+    const isInDist = currentDir.endsWith("dist") || currentDir.endsWith("dist/");
+    
+    // Construct path to bundled directory
+    // If in dist/ (e.g. dist/index.js), bundled is in dist/bundled/
+    // If in src/ (dev), bundled might not exist or we might want to use project root logic
+    const bundledDir = isInDist 
+      ? path.resolve(currentDir, "bundled", name)
+      : path.resolve(currentDir, "..", "dist", "bundled", name);
+
+    if (fs.existsSync(bundledDir)) {
+      return bundledDir;
+    }
+  } catch (error) {
+    // Ignore errors resolving path
+  }
+  return null;
+}
+
+/**
  * Get the backend command for a language.
+ *
+ * Priority:
+ * 1. Bundled backend (dist/bundled/<name>)
+ * 2. npm/uvx download (fallback)
  *
  * When autoUpdate is enabled:
  * - npx: Uses --yes flag to skip prompts (already uses @latest)
@@ -138,6 +172,17 @@ export function getBackendCommand(
     if (!config.python.enabled) return null;
 
     if (config.python.provider === "pyright-mcp") {
+      // Check for bundled pyright backend
+      const bundledPath = resolveBundledBackend("pyright");
+      if (bundledPath) {
+        console.error(`[Config] Using bundled pyright backend from ${bundledPath}`);
+        return {
+          enabled: true,
+          command: "node",
+          args: [path.join(bundledPath, "dist", "index.js")],
+        };
+      }
+
       return {
         enabled: true,
         command: "npx",
@@ -146,6 +191,19 @@ export function getBackendCommand(
           : ["@treedy/pyright-mcp@latest"],
       };
     } else {
+      // python-lsp-mcp
+      
+      // Check for bundled python backend
+      const bundledPath = resolveBundledBackend("python");
+      if (bundledPath) {
+        console.error(`[Config] Using bundled python backend from ${bundledPath}`);
+        return {
+          enabled: true,
+          command: "uv",
+          args: ["run", "--directory", bundledPath, "python-lsp-mcp"],
+        };
+      }
+
       // python-lsp-mcp via uvx
       return {
         enabled: true,
@@ -158,6 +216,17 @@ export function getBackendCommand(
   } else if (language === "typescript") {
     if (!config.typescript.enabled) return null;
 
+    // Check for bundled typescript backend
+    const bundledPath = resolveBundledBackend("typescript");
+    if (bundledPath) {
+      console.error(`[Config] Using bundled typescript backend from ${bundledPath}`);
+      return {
+        enabled: true,
+        command: "node",
+        args: [path.join(bundledPath, "dist", "index.js")],
+      };
+    }
+
     return {
       enabled: true,
       command: "npx",
@@ -167,6 +236,17 @@ export function getBackendCommand(
     };
   } else if (language === "vue") {
     if (!config.vue.enabled) return null;
+
+    // Check for bundled vue backend
+    const bundledPath = resolveBundledBackend("vue");
+    if (bundledPath) {
+      console.error(`[Config] Using bundled vue backend from ${bundledPath}`);
+      return {
+        enabled: true,
+        command: "node",
+        args: [path.join(bundledPath, "dist", "index.js")],
+      };
+    }
 
     return {
       enabled: true,
