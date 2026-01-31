@@ -30,6 +30,7 @@ import {
   setActiveWorkspace,
   validateFileWorkspace,
   clearAllConnections,
+  resolveFilePath,
 } from "./vue-service.js";
 
 // Direct TypeScript service as fallback
