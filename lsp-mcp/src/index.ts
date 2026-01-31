@@ -16,6 +16,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { createRequire } from "module";
+import * as fs from "fs";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 
 import { loadConfig, inferLanguageFromPath, type PythonProvider, type Language } from "./config.js";
@@ -321,7 +322,104 @@ const UNIFIED_TOOLS: Array<{
   { name: "rename", description: "Preview renaming a symbol at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive(), newName: z.string() } },
   { name: "update_document", description: "Update file content for incremental analysis without writing to disk", schema: { file: z.string(), content: z.string() } },
   { name: "search", description: "Search for a pattern in files using ripgrep. Uses active workspace if path is omitted.", schema: { pattern: z.string(), path: z.string().optional(), glob: z.string().optional() } },
+  { name: "summarize_file", description: "Get a high-level outline of a file (classes, functions, methods) to understand its structure without reading the full content.", schema: { file: z.string() } },
+  { name: "read_file_with_hints", description: "Read file content with inlay hints (type annotations, parameter names) inserted as comments. Useful for understanding complex code.", schema: { file: z.string() } },
+  { name: "code_action", description: "Get available code actions (refactors and quick fixes) at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
+  { name: "run_code_action", description: "Apply a code action (refactor or quick fix)", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive(), kind: z.enum(["refactor", "quickfix"]), name: z.string(), actionName: z.string().optional(), preview: z.boolean().default(false).optional() } },
 ];
+
+/**
+ * Helper to apply inlay hints to file content.
+ */
+function applyInlayHints(content: string, hints: any[], language: string): string {
+  const lines = content.split('\n');
+  // Copy to avoid mutating original split array if we used it elsewhere (safety)
+  const resultLines = [...lines];
+  
+  // Normalize and sort hints reverse
+  const normalizedHints = hints.map(h => {
+    let line: number, char: number;
+    let label = "";
+    
+    // Extract label
+    if (typeof h.label === 'string') label = h.label;
+    else if (Array.isArray(h.label)) label = h.label.map((p: any) => p.value).join('');
+    
+    // Extract position
+    if (language === 'typescript') {
+        // TS backend wrapper returns { position: { line, column } } (1-based)
+        // See backends/typescript/src/index.ts
+        line = h.position.line - 1;
+        char = h.position.column - 1;
+    } else {
+        // Python/Vue backends return raw LSP { position: { line, character } } (0-based)
+        line = h.position.line;
+        char = h.position.character;
+    }
+    
+    return { line, char, label, kind: h.kind, paddingLeft: h.paddingLeft, paddingRight: h.paddingRight };
+  }).sort((a, b) => {
+    if (a.line !== b.line) return b.line - a.line;
+    return b.char - a.char;
+  });
+  
+  for (const hint of normalizedHints) {
+    if (hint.line < 0 || hint.line >= resultLines.length) continue;
+    
+    const lineContent = resultLines[hint.line];
+    // In strict mode we might check char bounds, but LSP can point past end of line
+    if (hint.char < 0) continue; 
+    
+    // Split line
+    const prefix = lineContent.substring(0, hint.char);
+    const suffix = lineContent.substring(hint.char);
+    
+    let hintText = hint.label;
+    
+    // Formatting style:
+    // Kind 1 (Type):   `variable/*: type*/`
+    // Kind 2 (Param):  `func(/*name:*/ arg)`
+    // Other:           `/*label*/`
+    
+    let formatted = "";
+    if (hint.kind === 1) {
+        formatted = `/*: ${hintText.trim()}*/`;
+        // Type hints usually need a space before if not present
+        if (!hint.paddingLeft && prefix.length > 0 && !prefix.endsWith(" ")) formatted = " " + formatted;
+    } else if (hint.kind === 2) {
+        formatted = `/*${hintText.trim()}:*/`;
+        // Param hints usually need a space after
+        if (!hint.paddingRight) formatted = formatted + " ";
+    } else {
+        formatted = `/*${hintText}*/`;
+    }
+    
+    resultLines[hint.line] = prefix + formatted + suffix;
+  }
+  
+  return resultLines.join('\n');
+}
+
+/**
+ * Helper to format document symbols into a Markdown outline.
+ */
+function formatSymbolsToMarkdown(symbols: any[], depth = 0): string {
+  let output = "";
+  const indent = "  ".repeat(depth);
+  
+  for (const symbol of symbols) {
+    const kind = symbol.kind ? `[${symbol.kind.toLowerCase()}]` : "";
+    const line = symbol.range?.start?.line ?? symbol.line ?? "?"; // Handle both standard LSP and flattened format
+    
+    output += `${indent}- ${kind} ${symbol.name} (line ${line})\n`;
+    
+    if (symbol.children && symbol.children.length > 0) {
+      output += formatSymbolsToMarkdown(symbol.children, depth + 1);
+    }
+  }
+  
+  return output;
+}
 
 /**
  * Language-specific tools that are not part of the unified set.
@@ -340,8 +438,6 @@ const LANGUAGE_SPECIFIC_TOOLS: Record<Language, Array<{
   typescript: [
     { name: "move", description: "Move a function, class, or variable to a new file", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive(), destination: z.string().optional(), preview: z.boolean().default(false).optional() } },
     { name: "function_signature", description: "Get current signature of a function", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
-    { name: "available_refactors", description: "Get available refactoring actions", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
-    { name: "apply_refactor", description: "Apply a specific refactoring action", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive(), refactorName: z.string(), actionName: z.string(), preview: z.boolean().default(false).optional() } },
   ],
   vue: [],
 };
@@ -361,10 +457,11 @@ server.registerTool(
   async ({ path: workspacePath }) => {
     activeWorkspacePath = workspacePath;
     const results: Record<string, any> = {};
-    const languages: Language[] = [];
-    if (config.python.enabled) languages.push("python");
-    if (config.typescript.enabled) languages.push("typescript");
-    if (config.vue.enabled) languages.push("vue");
+    
+    // Get all enabled languages
+    const languages = Object.keys(config.languages).filter(
+      (lang) => config.languages[lang].enabled
+    );
 
     await Promise.all(
       languages.map(async (lang) => {
@@ -416,26 +513,13 @@ function preRegisterTools(): void {
         const filePath = (args.file as string) || (args.path as string);
         
         // Handle search without path (uses active workspace implicitly via backend logic)
-        // But for routing, we need to know which backend to ask.
-        // If no path is provided for search, we might want to query ALL active backends?
-        // Or default to a primary one.
-        // For now, let's keep search simple: if no path, we can't infer language easily unless we check active workspace.
-        
-        // Special case for search
+        // Only implementing a simple "try all enabled" for global search
         if (tool.name === "search" && !filePath) {
-             // For global search without path, we might need a different strategy.
-             // But for now, let's error if we can't determine context, or default to all if possible.
-             // Actually, search tool in backends now supports optional path.
-             // If we want to support "search in current context", we need to know what the context is.
-             // Let's iterate over started backends and search in all?
-             // That's complex. Let's require path for now or default to python if active.
-             // Better: Allow search to take a 'language' param optionally, or infer from active workspace if only one is active.
-             
-             // Let's implement a simple "try all enabled" for global search
-             const languages: Language[] = ["python", "typescript", "vue"];
+             const languages = Object.keys(config.languages).filter(
+               (lang) => config.languages[lang].enabled
+             );
              const results = [];
              for (const lang of languages) {
-                 // Only search if backend is started to avoid slow startup for just a search
                  if (startedBackends.has(lang)) {
                      try {
                          const res = await backendManager.callTool(lang, "search", args as Record<string, unknown>);
@@ -459,8 +543,8 @@ function preRegisterTools(): void {
           };
         }
 
-        // Infer language from path
-        const language = inferLanguageFromPath(filePath);
+        // Infer language from path (now uses config)
+        const language = inferLanguageFromPath(filePath, config);
         if (!language) {
           return {
             content: [
@@ -468,7 +552,7 @@ function preRegisterTools(): void {
                 type: "text",
                 text: JSON.stringify({
                   error: "Unsupported File Type",
-                  message: `Cannot determine language for file '${filePath}'. Unified tools require a recognized file extension (.py, .ts, .vue, etc.)`,
+                  message: `Cannot determine language for file '${filePath}'. Check configuration for supported extensions.`, 
                 })
               },
             ],
@@ -499,22 +583,109 @@ function preRegisterTools(): void {
         }
 
         // Capability Check: check if the backend actually supports this tool
-        const availableTools = await backendManager.getTools(language);
-        const supportsTool = availableTools.some(t => t.name === tool.name);
+        // Special case for composite tools like summarize_file (they use other tools internally)
+        if (tool.name !== "summarize_file" && tool.name !== "read_file_with_hints") {
+          const availableTools = await backendManager.getTools(language);
+          const supportsTool = availableTools.some(t => t.name === tool.name);
 
-        if (!supportsTool) {
-          return {
-            content: [
-              {
+          if (!supportsTool) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    error: "Not Implemented",
+                    message: `The '${language}' backend does not support the '${tool.name}' feature yet.`,
+                    available_tools: availableTools.map(t => t.name),
+                  })
+                },
+              ],
+            };
+          }
+        }
+
+        // Special case for summarize_file
+        if (tool.name === "summarize_file") {
+          try {
+            // Call symbols tool to get the data
+            const result = await backendManager.callTool(language, "symbols", args as Record<string, unknown>);
+            const parsed = JSON.parse(result.content[0].text);
+            
+            if (parsed.error) {
+              return { content: [{ type: "text", text: JSON.stringify(parsed) }] };
+            }
+
+            const symbols = parsed.symbols || [];
+            const summary = formatSymbolsToMarkdown(symbols);
+            
+            return {
+              content: [{
                 type: "text",
-                text: JSON.stringify({
-                  error: "Not Implemented",
-                  message: `The '${language}' backend does not support the '${tool.name}' feature yet.`,
-                  available_tools: availableTools.map(t => t.name),
-                })
-              },
-            ],
-          };
+                text: `File Summary for ${filePath}:\n\n${summary || "(No symbols found)"}`
+              }]
+            };
+          } catch (error) {
+            return {
+              content: [{ type: "text", text: JSON.stringify({ error: `Failed to summarize file: ${error}` }) }],
+            };
+          }
+        }
+
+        // Special case for read_file_with_hints
+        if (tool.name === "read_file_with_hints") {
+          try {
+            // 1. Read file content (using fs)
+            // Note: args.file might be relative, inferLanguageFromPath resolved it? 
+            // No, inferLanguageFromPath just checked extension.
+            // We need to resolve path first.
+            // But we don't have resolveFilePath here (it's in backend).
+            // However, we rely on backendManager.callTool to resolve it internally?
+            // No, fs.readFileSync needs abs path.
+            
+            // We can't easily resolve path here without duplicating logic or exposing it from backend.
+            // BUT: backendManager.callTool("inlay_hints") will verify path.
+            // If we pass the raw 'file' arg to backend, it will resolve it and check workspace.
+            // But we need to read the SAME file locally.
+            
+            // Workaround: We require absolute path or relative to cwd?
+            // Actually, we can rely on activeWorkspacePath global if set.
+            let absPath = filePath;
+            if (!path.isAbsolute(filePath) && activeWorkspacePath) {
+                absPath = path.join(activeWorkspacePath, filePath);
+            }
+            
+            if (!fs.existsSync(absPath)) {
+                 return { content: [{ type: "text", text: JSON.stringify({ error: `File not found: ${absPath}` }) }] };
+            }
+            
+            const content = fs.readFileSync(absPath, "utf-8");
+
+            // 2. Get hints from backend
+            const result = await backendManager.callTool(language, "inlay_hints", args as Record<string, unknown>);
+            const parsed = JSON.parse(result.content[0].text);
+            
+            if (parsed.error) {
+               // If backend fails (e.g. timeout), just return content without hints?
+               // Or report error. Let's report error to be safe.
+               return { content: [{ type: "text", text: JSON.stringify(parsed) }] };
+            }
+            
+            const hints = parsed.hints || [];
+            
+            // 3. Apply hints
+            const contentWithHints = applyInlayHints(content, hints, language);
+            
+            return {
+              content: [{
+                type: "text",
+                text: contentWithHints
+              }]
+            };
+          } catch (error) {
+            return {
+              content: [{ type: "text", text: JSON.stringify({ error: `Failed to read file with hints: ${error}` }) }],
+            };
+          }
         }
 
         // Rename argument for specific backend mismatches if any
@@ -537,8 +708,10 @@ function preRegisterTools(): void {
   }
 
   // 2. Register Language-Specific Tools
-  const languages: Language[] = ["python", "typescript", "vue"];
-  for (const language of languages) {
+  // Iterate over configured languages
+  for (const [language, langConfig] of Object.entries(config.languages)) {
+    if (!langConfig.enabled) continue;
+
     const tools = LANGUAGE_SPECIFIC_TOOLS[language];
     if (!tools) continue;
 
@@ -606,9 +779,9 @@ process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 async function main() {
   console.error("LSP MCP Server - Unified Multi-Language Code Intelligence");
   console.error(`  Version: ${packageJson.version}`);
-  console.error("  Python:", config.python.enabled ? `enabled (${config.python.provider})` : "disabled");
-  console.error("  TypeScript:", config.typescript.enabled ? "enabled" : "disabled");
-  console.error("  Vue:", config.vue.enabled ? "enabled" : "disabled");
+  console.error("  Python:", config.languages.python?.enabled ? `enabled` : "disabled");
+  console.error("  TypeScript:", config.languages.typescript?.enabled ? "enabled" : "disabled");
+  console.error("  Vue:", config.languages.vue?.enabled ? "enabled" : "disabled");
   console.error("");
 
   const transport = new StdioServerTransport();
@@ -617,14 +790,11 @@ async function main() {
   // Eagerly start all enabled backends if configured
   if (config.eagerStart) {
     console.error("Eager start enabled - starting all backends now...");
-    const languages: Language[] = [];
-    if (config.python.enabled) languages.push("python");
-    if (config.typescript.enabled) languages.push("typescript");
-    if (config.vue.enabled) languages.push("vue");
-
+    
     // Start backends in parallel
+    const enabledLanguages = Object.keys(config.languages).filter(l => config.languages[l].enabled);
     await Promise.allSettled(
-      languages.map(async (lang) => {
+      enabledLanguages.map(async (lang) => {
         try {
           await backendManager.getBackend(lang);
           startedBackends.add(lang);

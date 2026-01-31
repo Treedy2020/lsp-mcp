@@ -1036,6 +1036,38 @@ export async function getSignatureHelp(
 }
 
 /**
+ * Get inlay hints for a file
+ */
+export async function getInlayHints(filePath: string): Promise<any[]> {
+  const projectRoot = findProjectRoot(filePath);
+  const conn = await getConnection(projectRoot);
+  await ensureDocumentOpen(conn, filePath);
+
+  try {
+    // We need to read file content to get length for range
+    const content = getFileContent(filePath);
+    const lines = content.split("\n");
+    
+    const result = await sendMessage(conn, "textDocument/inlayHint", {
+      textDocument: { uri: toUri(filePath) },
+      range: {
+        start: { line: 0, character: 0 },
+        end: { line: lines.length, character: lines[lines.length - 1].length }
+      }
+    });
+
+    if (!result) {
+      return [];
+    }
+
+    return Array.isArray(result) ? result : [];
+  } catch (error) {
+    console.error("Inlay hints error:", error);
+    return [];
+  }
+}
+
+/**
  * Diagnostic type for internal use
  */
 interface Diagnostic {

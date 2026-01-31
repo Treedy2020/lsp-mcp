@@ -573,6 +573,39 @@ def update_document(file: str, content: str) -> str:
 
 
 @mcp.tool()
+def inlay_hints(file: str) -> str:
+    """Get inlay hints (type annotations, parameter names) for a file.
+
+    Args:
+        file: Path to the Python file
+
+    Returns:
+        JSON string with list of hints
+    """
+    # Resolve and validate path
+    abs_file, error = resolve_file_path(file)
+    if error:
+        return json.dumps(error, indent=2)
+
+    try:
+        workspace = _find_workspace(abs_file)
+        client = get_lsp_client(workspace)
+        
+        # Read file to get line count
+        with open(abs_file, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+            line_count = len(lines)
+            last_col = len(lines[-1]) if lines else 0
+            
+        hints = client.inlay_hint(abs_file, 1, 1, line_count + 1, last_col + 1)
+        
+        return json.dumps({"hints": hints, "count": len(hints)}, indent=2)
+        
+    except Exception as e:
+        return json.dumps({"error": str(e), "backend": "pyright"}, indent=2)
+
+
+@mcp.tool()
 def code_action(file: str, line: int, column: int) -> str:
     """Get available code actions (Quick Fixes and Refactorings).
 

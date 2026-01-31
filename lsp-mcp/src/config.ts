@@ -8,8 +8,17 @@ import { fileURLToPath } from "url";
  * Supports environment variables and programmatic configuration.
  */
 
-export type Language = "python" | "typescript" | "vue";
-export type PythonProvider = "python-lsp-mcp" | "pyright-mcp";
+export type Language = string;
+
+export interface LanguageConfig {
+  enabled: boolean;
+  command?: string;
+  args?: string[];
+  extensions: string[];
+  // For backward compatibility / complex logic (like bundled path resolution)
+  // we might keep some logic in code, but expose overrides here.
+  // Or we can use a factory function in the default config.
+}
 
 export interface BackendConfig {
   enabled: boolean;
@@ -18,55 +27,63 @@ export interface BackendConfig {
 }
 
 export interface Config {
-  python: {
-    enabled: boolean;
-    provider: PythonProvider;
-  };
-  typescript: {
-    enabled: boolean;
-  };
-  vue: {
-    enabled: boolean;
-  };
-  autoUpdate: boolean; // If true, always fetch latest versions on startup
-  eagerStart: boolean; // If true, start all backends at startup (makes tools available immediately)
-  idleTimeout: number; // Idle timeout in seconds (0 = disabled)
+  // Generic language configurations
+  languages: Record<string, LanguageConfig>;
+  
+  // Legacy fields for backward compatibility (mapped to languages)
+  python?: { enabled: boolean; provider: string };
+  typescript?: { enabled: boolean };
+  vue?: { enabled: boolean };
+
+  autoUpdate: boolean;
+  eagerStart: boolean;
+  idleTimeout: number;
 }
+
+// Default extensions mapping
+const DEFAULT_EXTENSIONS: Record<string, string[]> = {
+  python: [".py", ".pyi", ".pyw"],
+  typescript: [".ts", ".tsx", ".js", ".jsx", ".mts", ".mjs", ".cts", ".cjs"],
+  vue: [".vue"],
+};
 
 /**
  * Load configuration from environment variables.
  */
 export function loadConfig(): Config {
   const pythonEnabled = getEnvBool("LSP_MCP_PYTHON_ENABLED", true);
-  const pythonProvider = getEnvString(
-    "LSP_MCP_PYTHON_PROVIDER",
-    "python-lsp-mcp"
-  ) as PythonProvider;
+  const pythonProvider = getEnvString("LSP_MCP_PYTHON_PROVIDER", "python-lsp-mcp");
 
   const typescriptEnabled = getEnvBool("LSP_MCP_TYPESCRIPT_ENABLED", true);
   const vueEnabled = getEnvBool("LSP_MCP_VUE_ENABLED", true);
 
-  // Auto-update is enabled by default - always fetch latest versions
   const autoUpdate = getEnvBool("LSP_MCP_AUTO_UPDATE", true);
-
-  // Eager start - if true, start all backends at startup
-  // If false (default), backends are loaded on-demand via start_backend tool
   const eagerStart = getEnvBool("LSP_MCP_EAGER_START", false);
-
-  // Idle timeout in seconds (default 10 minutes)
   const idleTimeout = parseInt(getEnvString("LSP_MCP_IDLE_TIMEOUT", "600"), 10);
 
-  return {
+  // Construct generic languages config from defaults + env vars
+  const languages: Record<string, LanguageConfig> = {
     python: {
       enabled: pythonEnabled,
-      provider: pythonProvider,
+      extensions: DEFAULT_EXTENSIONS.python,
+      // Command/args are resolved dynamically for now to support bundling logic
     },
     typescript: {
       enabled: typescriptEnabled,
+      extensions: DEFAULT_EXTENSIONS.typescript,
     },
     vue: {
       enabled: vueEnabled,
+      extensions: DEFAULT_EXTENSIONS.vue,
     },
+  };
+
+  return {
+    languages,
+    // Preserve legacy structure for now if needed by other parts of the code
+    python: { enabled: pythonEnabled, provider: pythonProvider },
+    typescript: { enabled: typescriptEnabled },
+    vue: { enabled: vueEnabled },
     autoUpdate,
     eagerStart,
     idleTimeout,
@@ -90,29 +107,19 @@ function getEnvString(name: string, defaultValue: string): string {
 }
 
 /**
- * File extension to language mapping.
- */
-const EXTENSION_MAP: Record<string, Language> = {
-  ".py": "python",
-  ".pyi": "python",
-  ".pyw": "python",
-  ".ts": "typescript",
-  ".tsx": "typescript",
-  ".js": "typescript",
-  ".jsx": "typescript",
-  ".mts": "typescript",
-  ".mjs": "typescript",
-  ".cts": "typescript",
-  ".cjs": "typescript",
-  ".vue": "vue",
-};
-
-/**
  * Infer the language from a file path based on its extension.
+ * Uses the provided configuration to look up extensions.
  */
-export function inferLanguageFromPath(filePath: string): Language | null {
+export function inferLanguageFromPath(filePath: string, config: Config): Language | null {
   const ext = filePath.substring(filePath.lastIndexOf("."));
-  return EXTENSION_MAP[ext] ?? null;
+  
+  for (const [lang, langConfig] of Object.entries(config.languages)) {
+    if (langConfig.enabled && langConfig.extensions.includes(ext)) {
+      return lang;
+    }
+  }
+  
+  return null;
 }
 
 /**
@@ -171,12 +178,26 @@ export function getBackendCommand(
   language: Language,
   config: Config
 ): BackendConfig | null {
+  const langConfig = config.languages[language];
+  if (!langConfig || !langConfig.enabled) return null;
+
+  // If command is explicitly configured (e.g. via config file in future), use it
+  if (langConfig.command) {
+    return {
+      enabled: true,
+      command: langConfig.command,
+      args: langConfig.args || [],
+    };
+  }
+
+  // Fallback to built-in logic for known languages
   const { autoUpdate } = config;
 
   if (language === "python") {
-    if (!config.python.enabled) return null;
+    // Legacy logic for Python provider switching
+    const provider = config.python?.provider || "python-lsp-mcp";
 
-    if (config.python.provider === "pyright-mcp") {
+    if (provider === "pyright-mcp") {
       // Check for bundled pyright backend
       const bundledPath = resolveBundledBackend("pyright");
       if (bundledPath) {
@@ -219,8 +240,6 @@ export function getBackendCommand(
       };
     }
   } else if (language === "typescript") {
-    if (!config.typescript.enabled) return null;
-
     // Check for bundled typescript backend
     const bundledPath = resolveBundledBackend("typescript");
     if (bundledPath) {
@@ -240,8 +259,6 @@ export function getBackendCommand(
         : ["@treedy/typescript-lsp-mcp@latest"],
     };
   } else if (language === "vue") {
-    if (!config.vue.enabled) return null;
-
     // Check for bundled vue backend
     const bundledPath = resolveBundledBackend("vue");
     if (bundledPath) {

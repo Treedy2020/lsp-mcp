@@ -675,6 +675,32 @@ export function displayPartsToString(
 }
 
 /**
+ * Get inlay hints for a file.
+ */
+export function getInlayHints(
+  filePath: string
+): bundledTs.InlayHint[] {
+  const { service, absPath } = getServiceForFile(filePath);
+  const content = getFileContent(absPath);
+  
+  // Get span for entire file
+  const span: bundledTs.TextSpan = {
+    start: 0,
+    length: content.length
+  };
+
+  return service.provideInlayHints(absPath, span, {
+    includeInlayParameterNameHints: "all",
+    includeInlayParameterNameHintsWhenArgumentMatchesName: false,
+    includeInlayFunctionParameterTypeHints: true,
+    includeInlayVariableTypeHints: true,
+    includeInlayPropertyDeclarationTypeHints: true,
+    includeInlayFunctionLikeReturnTypeHints: true,
+    includeInlayEnumMemberValueHints: true,
+  });
+}
+
+/**
  * Get code fixes (Quick Fixes) at a position.
  * Requires error codes, which we find by running diagnostics first.
  */

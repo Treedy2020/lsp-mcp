@@ -39,6 +39,7 @@ import {
   clearAllCaches,
   getCombinedCodeActions,
   applyQuickFix,
+  getInlayHints,
 } from "./ts-service.js";
 
 // Read version from package.json
@@ -50,6 +51,47 @@ const server = new McpServer({
   name: "typescript-lsp-mcp",
   version: packageJson.version,
 });
+
+// ============================================================================
+// Tool: inlay_hints
+// ============================================================================
+server.tool(
+  "inlay_hints",
+  "Get inlay hints (type annotations, parameter names) for a file",
+  {
+    file: z.string().describe("Path to the file"),
+  },
+  async ({ file }) => {
+    try {
+      const { absPath, error } = resolveFilePath(file);
+      if (error || !absPath) {
+        return { content: [{ type: "text", text: error || "Invalid path" }] };
+      }
+
+      const hints = getInlayHints(absPath);
+      
+      // Transform to a simpler format similar to LSP
+      const result = hints.map((h: any) => ({
+        label: h.text, // TS InlayHintLabelPart | string
+        position: offsetToPosition(getFileContent(absPath), h.position),
+        kind: h.kind,
+        paddingLeft: h.paddingLeft,
+        paddingRight: h.paddingRight
+      }));
+
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({ hints: result, count: result.length }),
+        }],
+      };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: JSON.stringify({ error: String(error) }) }],
+      };
+    }
+  }
+);
 
 // ============================================================================
 // Tool: code_action

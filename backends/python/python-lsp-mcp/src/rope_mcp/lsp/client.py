@@ -185,6 +185,7 @@ class LspClient:
                             }
                         }
                     },
+                    "inlayHint": {"dynamicRegistration": False},
                     "documentSymbol": {"hierarchicalDocumentSymbolSupport": True},
                     "publishDiagnostics": {},
                 },
@@ -445,6 +446,33 @@ class LspClient:
                 }
             )
         return completions
+
+    def inlay_hint(
+        self,
+        file_path: str,
+        start_line: int,
+        start_col: int,
+        end_line: int,
+        end_col: int,
+    ) -> list[dict]:
+        """Get inlay hints for a range."""
+        self.open_document(file_path)
+        uri = self._path_to_uri(file_path)
+
+        params = {
+            "textDocument": {"uri": uri},
+            "range": {
+                "start": {"line": start_line - 1, "character": start_col - 1},
+                "end": {"line": end_line - 1, "character": end_col - 1},
+            },
+        }
+
+        result = self._send_request("textDocument/inlayHint", params)
+
+        if not result:
+            return []
+
+        return result
 
     def code_action(
         self,

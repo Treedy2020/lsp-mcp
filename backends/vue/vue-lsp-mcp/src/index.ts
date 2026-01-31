@@ -31,6 +31,7 @@ import {
   validateFileWorkspace,
   clearAllConnections,
   resolveFilePath,
+  getInlayHints,
 } from "./vue-service.js";
 
 // Direct TypeScript service as fallback
@@ -46,65 +47,61 @@ import {
 
 // Wrapper functions that try LSP first, then fallback to direct TS
 async function getQuickInfo(file: string, line: number, column: number) {
-  // Guard: check workspace
-  const error = validateFileWorkspace(file);
-  if (error) throw new Error(error);
+  // Resolve and validate path
+  const { absPath, error } = resolveFilePath(file);
+  if (error || !absPath) throw new Error(error || "Invalid path");
 
   // Try LSP first
-  const lspResult = await getLspQuickInfo(file, line, column);
+  const lspResult = await getLspQuickInfo(absPath, line, column);
   if (lspResult && lspResult.contents) {
     return lspResult;
   }
   // Fallback to direct TS service
-  return getTsQuickInfo(file, line, column);
+  return getTsQuickInfo(absPath, line, column);
 }
 
 async function getDefinition(file: string, line: number, column: number) {
-  // Guard: check workspace
-  const error = validateFileWorkspace(file);
-  if (error) throw new Error(error);
+  const { absPath, error } = resolveFilePath(file);
+  if (error || !absPath) throw new Error(error || "Invalid path");
 
-  const lspResult = await getLspDefinition(file, line, column);
+  const lspResult = await getLspDefinition(absPath, line, column);
   if (lspResult && lspResult.length > 0) {
     return lspResult;
   }
-  return getTsDefinition(file, line, column);
+  return getTsDefinition(absPath, line, column);
 }
 
 async function getReferences(file: string, line: number, column: number) {
-  // Guard: check workspace
-  const error = validateFileWorkspace(file);
-  if (error) throw new Error(error);
+  const { absPath, error } = resolveFilePath(file);
+  if (error || !absPath) throw new Error(error || "Invalid path");
 
-  const lspResult = await getLspReferences(file, line, column);
+  const lspResult = await getLspReferences(absPath, line, column);
   if (lspResult && lspResult.length > 0) {
     return lspResult;
   }
-  return getTsReferences(file, line, column);
+  return getTsReferences(absPath, line, column);
 }
 
 async function getCompletions(file: string, line: number, column: number, limit: number = 20) {
-  // Guard: check workspace
-  const error = validateFileWorkspace(file);
-  if (error) throw new Error(error);
+  const { absPath, error } = resolveFilePath(file);
+  if (error || !absPath) throw new Error(error || "Invalid path");
 
-  const lspResult = await getLspCompletions(file, line, column, limit);
+  const lspResult = await getLspCompletions(absPath, line, column, limit);
   if (lspResult && lspResult.items && lspResult.items.length > 0) {
     return lspResult;
   }
-  return getTsCompletions(file, line, column, limit);
+  return getTsCompletions(absPath, line, column, limit);
 }
 
 async function getSignatureHelp(file: string, line: number, column: number) {
-  // Guard: check workspace
-  const error = validateFileWorkspace(file);
-  if (error) throw new Error(error);
+  const { absPath, error } = resolveFilePath(file);
+  if (error || !absPath) throw new Error(error || "Invalid path");
 
-  const lspResult = await getLspSignatureHelp(file, line, column);
+  const lspResult = await getLspSignatureHelp(absPath, line, column);
   if (lspResult && lspResult.signatures && lspResult.signatures.length > 0) {
     return lspResult;
   }
-  return getTsSignatureHelp(file, line, column);
+  return getTsSignatureHelp(absPath, line, column);
 }
 
 // Read version from package.json
@@ -313,6 +310,37 @@ server.tool(
         content: [{
           type: "text",
           text: JSON.stringify(help),
+        }],
+      };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: JSON.stringify({ error: String(error) }) }],
+      };
+    }
+  }
+);
+
+// ============================================================================
+// Tool: inlay_hints
+// ============================================================================
+server.tool(
+  "inlay_hints",
+  "Get inlay hints (type annotations, parameter names) for a Vue SFC file",
+  {
+    file: z.string().describe("Path to the .vue file (absolute or relative to active workspace)"),
+  },
+  async ({ file }) => {
+    try {
+      const { absPath, error } = resolveFilePath(file);
+      if (error || !absPath) {
+        return { content: [{ type: "text", text: error || "Invalid path" }] };
+      }
+
+      const hints = await getInlayHints(absPath);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({ hints, count: hints.length }),
         }],
       };
     } catch (error) {
