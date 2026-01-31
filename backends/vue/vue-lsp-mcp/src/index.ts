@@ -329,16 +329,15 @@ server.tool(
   "diagnostics",
   "Get type errors and warnings for Vue SFC files",
   {
-    path: z.string().describe("Path to a .vue file or directory to check"),
+    path: z.string().describe("Path to a .vue file or directory to check (absolute or relative to active workspace)"),
   },
   async ({ path: inputPath }) => {
     try {
-      const error = validateFileWorkspace(inputPath);
-      if (error) {
-        return { content: [{ type: "text", text: error }] };
+      const { absPath, error } = resolveFilePath(inputPath);
+      if (error || !absPath) {
+        return { content: [{ type: "text", text: error || "Invalid path" }] };
       }
 
-      const absPath = path.resolve(inputPath);
       const stats = fs.statSync(absPath);
 
       let files: string[] = [];
@@ -395,21 +394,21 @@ server.tool(
   "update_document",
   "Update Vue file content for incremental analysis without writing to disk",
   {
-    file: z.string().describe("Absolute path to the .vue file"),
+    file: z.string().describe("Path to the .vue file (absolute or relative to active workspace)"),
     content: z.string().describe("New content for the file"),
   },
   async ({ file, content }) => {
     try {
-      const error = validateFileWorkspace(file);
-      if (error) {
-        return { content: [{ type: "text", text: error }] };
+      const { absPath, error } = resolveFilePath(file);
+      if (error || !absPath) {
+        return { content: [{ type: "text", text: error || "Invalid path" }] };
       }
 
-      await updateDocument(file, content);
+      await updateDocument(absPath, content);
       return {
         content: [{
           type: "text",
-          text: JSON.stringify({ success: true, file }),
+          text: JSON.stringify({ success: true, file: absPath }),
         }],
       };
     } catch (error) {
@@ -427,17 +426,17 @@ server.tool(
   "symbols",
   "Extract symbols (variables, functions, components) from a Vue SFC file",
   {
-    file: z.string().describe("Absolute path to the .vue file"),
+    file: z.string().describe("Path to the .vue file (absolute or relative to active workspace)"),
     query: z.string().optional().describe("Optional filter query for symbol names"),
   },
   async ({ file, query }) => {
     try {
-      const error = validateFileWorkspace(file);
-      if (error) {
-        return { content: [{ type: "text", text: error }] };
+      const { absPath, error } = resolveFilePath(file);
+      if (error || !absPath) {
+        return { content: [{ type: "text", text: error || "Invalid path" }] };
       }
 
-      const tree = await getDocumentSymbols(file);
+      const tree = await getDocumentSymbols(absPath);
       if (!tree) {
         return {
           content: [{ type: "text", text: JSON.stringify({ error: "Failed to get symbols" }) }],
@@ -515,19 +514,19 @@ server.tool(
   "rename",
   "Preview renaming a symbol at a specific position (shows all locations that would be renamed)",
   {
-    file: z.string().describe("Absolute path to the .vue file"),
+    file: z.string().describe("Path to the .vue file (absolute or relative to active workspace)"),
     line: z.number().int().positive().describe("Line number (1-based)"),
     column: z.number().int().positive().describe("Column number (1-based)"),
     newName: z.string().describe("New name for the symbol"),
   },
   async ({ file, line, column, newName }) => {
     try {
-      const error = validateFileWorkspace(file);
-      if (error) {
-        return { content: [{ type: "text", text: error }] };
+      const { absPath, error } = resolveFilePath(file);
+      if (error || !absPath) {
+        return { content: [{ type: "text", text: error || "Invalid path" }] };
       }
 
-      const locations = await getRenameLocations(file, line, column);
+      const locations = await getRenameLocations(absPath, line, column);
       if (!locations || locations.length === 0) {
         return {
           content: [{ type: "text", text: JSON.stringify({ error: "Cannot rename symbol at this position" }) }],
@@ -575,18 +574,38 @@ server.tool(
   "Search for a pattern in Vue files using ripgrep",
   {
     pattern: z.string().describe("The regex pattern to search for"),
-    path: z.string().optional().describe("Directory or file to search in"),
+    path: z.string().optional().describe("Directory or file to search in (absolute or relative to active workspace)"),
     glob: z.string().optional().describe("Glob pattern to filter files (e.g., '*.vue')"),
     caseSensitive: z.boolean().default(true).describe("Whether the search is case sensitive"),
     maxResults: z.number().int().positive().default(50).describe("Maximum number of results"),
   },
   async ({ pattern, path: searchPath, glob, caseSensitive, maxResults }) => {
     try {
+      let absSearchPath: string | undefined;
+
       if (searchPath) {
-        const error = validateFileWorkspace(searchPath);
-        if (error) {
-          return { content: [{ type: "text", text: error }] };
+        // Resolve and validate provided path
+        // We import resolveFilePath dynamically or assume it's available from closure if imported at top
+        // It is imported at top.
+        const { absPath, error } = validateFileWorkspace(searchPath) ? { absPath: null, error: validateFileWorkspace(searchPath) } : { absPath: path.resolve(searchPath), error: null }; 
+        // Wait, validateFileWorkspace returns error string or null.
+        // And we need resolution logic.
+        // I should have imported resolveFilePath in the previous step.
+        // Let's use resolveFilePath from import.
+        
+        // RE-IMPORT CHECK: I added resolveFilePath to imports in the previous step? 
+        // Yes, I did in the batch 1 replacement block.
+        
+        const result = resolveFilePath(searchPath);
+        if (result.error || !result.absPath) {
+           return { content: [{ type: "text", text: result.error || "Invalid path" }] };
         }
+        absSearchPath = result.absPath;
+      } else {
+        // Default to active workspace root if available
+        // We can use resolveFilePath(".") to get it
+        const { absPath } = resolveFilePath(".");
+        if (absPath) absSearchPath = absPath;
       }
 
       const { execSync } = await import("child_process");
@@ -601,7 +620,7 @@ server.tool(
       }
       args.push("--max-count", maxResults.toString());
       args.push(pattern);
-      if (searchPath) args.push(searchPath);
+      if (absSearchPath) args.push(absSearchPath);
 
       const result = execSync(args.join(" "), {
         encoding: "utf-8",
@@ -660,16 +679,16 @@ server.tool(
   "status",
   "Check Vue Language Server status for a project",
   {
-    file: z.string().describe("A .vue file path to check the project status for"),
+    file: z.string().describe("A .vue file path to check the project status for (absolute or relative to active workspace)"),
   },
   async ({ file }) => {
     try {
-      const error = validateFileWorkspace(file);
-      if (error) {
-        return { content: [{ type: "text", text: error }] };
+      const { absPath, error } = resolveFilePath(file);
+      if (error || !absPath) {
+        return { content: [{ type: "text", text: error || "Invalid path" }] };
       }
 
-      const status = await getProjectStatus(file);
+      const status = await getProjectStatus(absPath);
       return {
         content: [{
           type: "text",

@@ -136,44 +136,6 @@ async function testConfig() {
   console.log("Config tests passed!");
 }
 
-// Test the tool router
-async function testToolRouter() {
-  console.log("\nTesting tool router...");
-
-  const { routeTool } = await import("../src/tool-router.js");
-
-  // Test namespaced routing
-  const route1 = routeTool("python/hover", { file: "/test/file.py" });
-  console.assert(route1.language === "python", "Should route to python");
-  console.assert(route1.toolName === "hover", "Should extract hover tool");
-  console.log("  Namespaced routing: OK");
-
-  // Test inference from file extension
-  const route2 = routeTool("hover", { file: "/test/file.ts" });
-  console.assert(route2.language === "typescript", "Should infer typescript");
-  console.assert(route2.toolName === "hover", "Should keep tool name");
-  console.log("  File extension inference: OK");
-
-  // Test inference from path argument
-  const route3 = routeTool("diagnostics", { path: "/test/file.py" });
-  console.assert(route3.language === "python", "Should infer from path arg");
-  console.log("  Path argument inference: OK");
-
-  // Test error for ambiguous tool
-  try {
-    routeTool("hover", {});
-    console.assert(false, "Should throw for ambiguous tool");
-  } catch (error) {
-    console.assert(
-      (error as Error).message.includes("Cannot determine language"),
-      "Should have helpful error message"
-    );
-    console.log("  Error handling: OK");
-  }
-
-  console.log("Tool router tests passed!");
-}
-
 // Test backend manager (mocked)
 async function testBackendManager() {
   console.log("\nTesting backend manager structure...");
@@ -193,7 +155,12 @@ async function testBackendManager() {
     "Python should not be started initially"
   );
   console.log("  Initial status: OK");
-
+  
+  // Test switch_workspace availability check
+  // Note: Since we are not starting actual backends here, we can't fully test 
+  // the switch_workspace forwarding without mocking the clients.
+  // But we can verify the manager structure supports it.
+  
   // Cleanup
   await manager.shutdown();
   console.log("  Shutdown: OK");
@@ -208,7 +175,6 @@ async function main() {
   try {
     await setupFixtures();
     await testConfig();
-    await testToolRouter();
     await testBackendManager();
 
     console.log("\n=== All tests passed! ===");

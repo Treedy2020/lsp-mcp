@@ -24,7 +24,7 @@ from .config import (
     get_python_path_status,
     set_active_workspace,
     get_active_workspace,
-    validate_file_workspace,
+    resolve_file_path,
 )
 from .rope_client import get_client as get_rope_client
 from .lsp import get_lsp_client, close_all_clients, close_all_clients as close_lsp_clients
@@ -120,7 +120,7 @@ def hover(
     """Get documentation for the symbol at the given position.
 
     Args:
-        file: Absolute path to the Python file
+        file: Path to the Python file (absolute or relative to active workspace)
         line: 1-based line number
         column: 1-based column number
         backend: Backend to use (rope/pyright). Default: from config or 'rope'
@@ -128,8 +128,8 @@ def hover(
     Returns:
         JSON string with documentation or error message
     """
-    # Guard: check workspace
-    error = validate_file_workspace(file)
+    # Resolve and validate path
+    abs_file, error = resolve_file_path(file)
     if error:
         return json.dumps(error, indent=2)
 
@@ -137,9 +137,9 @@ def hover(
 
     if effective_backend == Backend.PYRIGHT:
         try:
-            workspace = _find_workspace(file)
+            workspace = _find_workspace(abs_file)
             client = get_lsp_client(workspace)
-            result = client.hover(file, line, column)
+            result = client.hover(abs_file, line, column)
             if result:
                 return json.dumps(
                     {"contents": result.get("contents", ""), "backend": "pyright"},
@@ -152,7 +152,7 @@ def hover(
         except Exception as e:
             return json.dumps({"error": str(e), "backend": "pyright"}, indent=2)
     else:
-        result = rope_hover(file, line, column)
+        result = rope_hover(abs_file, line, column)
         result["backend"] = "rope"
         return json.dumps(result, indent=2)
 
@@ -167,7 +167,7 @@ def definition(
     """Get the definition location for the symbol at the given position.
 
     Args:
-        file: Absolute path to the Python file
+        file: Path to the Python file (absolute or relative to active workspace)
         line: 1-based line number
         column: 1-based column number
         backend: Backend to use (rope/pyright). Default: from config or 'rope'
@@ -175,8 +175,8 @@ def definition(
     Returns:
         JSON string with definition location or error message
     """
-    # Guard: check workspace
-    error = validate_file_workspace(file)
+    # Resolve and validate path
+    abs_file, error = resolve_file_path(file)
     if error:
         return json.dumps(error, indent=2)
 
@@ -184,9 +184,9 @@ def definition(
 
     if effective_backend == Backend.PYRIGHT:
         try:
-            workspace = _find_workspace(file)
+            workspace = _find_workspace(abs_file)
             client = get_lsp_client(workspace)
-            locations = client.definition(file, line, column)
+            locations = client.definition(abs_file, line, column)
             if locations:
                 result = locations[0]
                 result["backend"] = "pyright"
@@ -198,7 +198,7 @@ def definition(
         except Exception as e:
             return json.dumps({"error": str(e), "backend": "pyright"}, indent=2)
     else:
-        result = rope_definition(file, line, column)
+        result = rope_definition(abs_file, line, column)
         result["backend"] = "rope"
         return json.dumps(result, indent=2)
 
@@ -213,7 +213,7 @@ def references(
     """Find all references to the symbol at the given position.
 
     Args:
-        file: Absolute path to the Python file
+        file: Path to the Python file (absolute or relative to active workspace)
         line: 1-based line number
         column: 1-based column number
         backend: Backend to use (rope/pyright). Default: from config or 'rope'
@@ -221,8 +221,8 @@ def references(
     Returns:
         JSON string with list of references or error message
     """
-    # Guard: check workspace
-    error = validate_file_workspace(file)
+    # Resolve and validate path
+    abs_file, error = resolve_file_path(file)
     if error:
         return json.dumps(error, indent=2)
 
@@ -230,16 +230,16 @@ def references(
 
     if effective_backend == Backend.PYRIGHT:
         try:
-            workspace = _find_workspace(file)
+            workspace = _find_workspace(abs_file)
             client = get_lsp_client(workspace)
-            refs = client.references(file, line, column)
+            refs = client.references(abs_file, line, column)
             return json.dumps(
                 {"references": refs, "count": len(refs), "backend": "pyright"}, indent=2
             )
         except Exception as e:
             return json.dumps({"error": str(e), "backend": "pyright"}, indent=2)
     else:
-        result = rope_references(file, line, column)
+        result = rope_references(abs_file, line, column)
         result["backend"] = "rope"
         return json.dumps(result, indent=2)
 
@@ -254,7 +254,7 @@ def completions(
     """Get code completion suggestions at the given position.
 
     Args:
-        file: Absolute path to the Python file
+        file: Path to the Python file (absolute or relative to active workspace)
         line: 1-based line number
         column: 1-based column number
         backend: Backend to use (rope/pyright). Default: from config or 'rope'
@@ -262,8 +262,8 @@ def completions(
     Returns:
         JSON string with completion items or error message
     """
-    # Guard: check workspace
-    error = validate_file_workspace(file)
+    # Resolve and validate path
+    abs_file, error = resolve_file_path(file)
     if error:
         return json.dumps(error, indent=2)
 
@@ -271,9 +271,9 @@ def completions(
 
     if effective_backend == Backend.PYRIGHT:
         try:
-            workspace = _find_workspace(file)
+            workspace = _find_workspace(abs_file)
             client = get_lsp_client(workspace)
-            items = client.completions(file, line, column)
+            items = client.completions(abs_file, line, column)
             return json.dumps(
                 {"completions": items, "count": len(items), "backend": "pyright"},
                 indent=2,
@@ -281,7 +281,7 @@ def completions(
         except Exception as e:
             return json.dumps({"error": str(e), "backend": "pyright"}, indent=2)
     else:
-        result = rope_completions(file, line, column)
+        result = rope_completions(abs_file, line, column)
         result["backend"] = "rope"
         return json.dumps(result, indent=2)
 
@@ -295,15 +295,15 @@ def symbols(
     """Get symbols from a Python file.
 
     Args:
-        file: Absolute path to the Python file
+        file: Path to the Python file (absolute or relative to active workspace)
         query: Optional filter query for symbol names
         backend: Backend to use (rope/pyright). Default: from config or 'rope'
 
     Returns:
         JSON string with list of symbols or error message
     """
-    # Guard: check workspace
-    error = validate_file_workspace(file)
+    # Resolve and validate path
+    abs_file, error = resolve_file_path(file)
     if error:
         return json.dumps(error, indent=2)
 
@@ -311,9 +311,9 @@ def symbols(
 
     if effective_backend == Backend.PYRIGHT:
         try:
-            workspace = _find_workspace(file)
+            workspace = _find_workspace(abs_file)
             client = get_lsp_client(workspace)
-            syms = client.document_symbols(file)
+            syms = client.document_symbols(abs_file)
             # Filter by query if provided
             if query:
                 query_lower = query.lower()
@@ -322,7 +322,7 @@ def symbols(
                 {
                     "symbols": syms,
                     "count": len(syms),
-                    "file": file,
+                    "file": abs_file,
                     "backend": "pyright",
                 },
                 indent=2,
@@ -330,7 +330,7 @@ def symbols(
         except Exception as e:
             return json.dumps({"error": str(e), "backend": "pyright"}, indent=2)
     else:
-        result = rope_symbols(file, query)
+        result = rope_symbols(abs_file, query)
         result["backend"] = "rope"
         return json.dumps(result, indent=2)
 
@@ -343,7 +343,7 @@ def rename(file: str, line: int, column: int, new_name: str) -> str:
     Uses Rope backend for best refactoring support.
 
     Args:
-        file: Absolute path to the Python file
+        file: Path to the Python file (absolute or relative to active workspace)
         line: 1-based line number
         column: 1-based column number
         new_name: The new name for the symbol
@@ -351,12 +351,12 @@ def rename(file: str, line: int, column: int, new_name: str) -> str:
     Returns:
         JSON string with changes made or error message
     """
-    # Guard: check workspace
-    error = validate_file_workspace(file)
+    # Resolve and validate path
+    abs_file, error = resolve_file_path(file)
     if error:
         return json.dumps(error, indent=2)
 
-    result = do_rename(file, line, column, new_name)
+    result = do_rename(abs_file, line, column, new_name)
     result["backend"] = "rope"
     return json.dumps(result, indent=2)
 
@@ -375,7 +375,7 @@ def move(
     Uses Rope backend for refactoring.
 
     Args:
-        file: Absolute path to the Python file containing the symbol
+        file: Path to the Python file containing the symbol
         line: 1-based line number of the symbol to move
         column: 1-based column number of the symbol
         destination: Destination module path (e.g., "mypackage.utils" or "utils.py")
@@ -384,12 +384,12 @@ def move(
     Returns:
         JSON string with changes made or error message
     """
-    # Guard: check workspace
-    error = validate_file_workspace(file)
+    # Resolve and validate path
+    abs_file, error = resolve_file_path(file)
     if error:
         return json.dumps(error, indent=2)
 
-    result = do_move(file, line, column, destination, resources_only=preview)
+    result = do_move(abs_file, line, column, destination, resources_only=preview)
     result["backend"] = "rope"
     return json.dumps(result, indent=2)
 
@@ -412,7 +412,7 @@ def change_signature(
     Uses Rope backend for refactoring.
 
     Args:
-        file: Absolute path to the Python file
+        file: Path to the Python file (absolute or relative to active workspace)
         line: 1-based line number of the function
         column: 1-based column number of the function
         new_params: New parameter order, e.g. ["self", "b", "a"] to reorder
@@ -435,8 +435,8 @@ def change_signature(
         # Remove param: def foo(a, b) -> def foo(a)
         change_signature(file, line, col, remove_param="b")
     """
-    # Guard: check workspace
-    error = validate_file_workspace(file)
+    # Resolve and validate path
+    abs_file, error = resolve_file_path(file)
     if error:
         return json.dumps(error, indent=2)
 
@@ -450,7 +450,7 @@ def change_signature(
         }
 
     result = do_change_signature(
-        file,
+        abs_file,
         line,
         column,
         new_params=new_params,
@@ -469,19 +469,19 @@ def function_signature(file: str, line: int, column: int) -> str:
     Useful for inspecting function parameters before changing the signature.
 
     Args:
-        file: Absolute path to the Python file
+        file: Path to the Python file (absolute or relative to active workspace)
         line: 1-based line number of the function
         column: 1-based column number of the function
 
     Returns:
         JSON string with function signature info
     """
-    # Guard: check workspace
-    error = validate_file_workspace(file)
+    # Resolve and validate path
+    abs_file, error = resolve_file_path(file)
     if error:
         return json.dumps(error, indent=2)
 
-    result = get_function_signature(file, line, column)
+    result = get_function_signature(abs_file, line, column)
     result["backend"] = "rope"
     return json.dumps(result, indent=2)
 
@@ -493,17 +493,17 @@ def diagnostics(path: str) -> str:
     Uses Pyright for type checking. Requires Pyright to be installed.
 
     Args:
-        path: Absolute path to a Python file or directory
+        path: Path to a Python file or directory (absolute or relative to active workspace)
 
     Returns:
         JSON string with diagnostics or error message
     """
-    # Guard: check workspace
-    error = validate_file_workspace(path)
+    # Resolve and validate path
+    abs_path, error = resolve_file_path(path)
     if error:
         return json.dumps(error, indent=2)
 
-    result = get_diagnostics(path)
+    result = get_diagnostics(abs_path)
     result["backend"] = "pyright"
     return json.dumps(result, indent=2)
 
@@ -515,22 +515,22 @@ def signature_help(file: str, line: int, column: int) -> str:
     Uses Pyright backend for accurate signature information.
 
     Args:
-        file: Absolute path to the Python file
+        file: Path to the Python file (absolute or relative to active workspace)
         line: 1-based line number
         column: 1-based column number
 
     Returns:
         JSON string with signature help or error message
     """
-    # Guard: check workspace
-    error = validate_file_workspace(file)
+    # Resolve and validate path
+    abs_file, error = resolve_file_path(file)
     if error:
         return json.dumps(error, indent=2)
 
     try:
-        workspace = _find_workspace(file)
+        workspace = _find_workspace(abs_file)
         client = get_lsp_client(workspace)
-        result = client.signature_help(file, line, column)
+        result = client.signature_help(abs_file, line, column)
         if result:
             result["backend"] = "pyright"
             return json.dumps(result, indent=2)
@@ -549,23 +549,23 @@ def update_document(file: str, content: str) -> str:
     Uses Pyright backend for incremental updates.
 
     Args:
-        file: Absolute path to the Python file
+        file: Path to the Python file (absolute or relative to active workspace)
         content: New file content
 
     Returns:
         JSON string with confirmation
     """
-    # Guard: check workspace
-    error = validate_file_workspace(file)
+    # Resolve and validate path
+    abs_file, error = resolve_file_path(file)
     if error:
         return json.dumps(error, indent=2)
 
     try:
-        workspace = _find_workspace(file)
+        workspace = _find_workspace(abs_file)
         client = get_lsp_client(workspace)
-        client.update_document(file, content)
+        client.update_document(abs_file, content)
         return json.dumps(
-            {"success": True, "file": file, "backend": "pyright"}, indent=2
+            {"success": True, "file": abs_file, "backend": "pyright"}, indent=2
         )
     except Exception as e:
         return json.dumps({"error": str(e), "backend": "pyright"}, indent=2)
@@ -584,7 +584,7 @@ def search(
 
     Args:
         pattern: The regex pattern to search for
-        path: Directory or file to search in (defaults to current working directory)
+        path: Directory or file to search in (defaults to current working directory). Can be relative to active workspace.
         glob: Glob pattern to filter files (e.g., "*.py", "**/*.ts")
         case_sensitive: Whether the search is case sensitive
         max_results: Maximum number of results to return
@@ -592,15 +592,23 @@ def search(
     Returns:
         JSON string with search results or error message
     """
-    # Guard: check workspace if path is provided
-    if path:
-        error = validate_file_workspace(path)
+    # Resolve and validate path if provided
+    search_path = path
+    if search_path:
+        abs_path, error = resolve_file_path(search_path)
         if error:
             return json.dumps(error, indent=2)
+        search_path = abs_path
+    
+    # If no path provided, use active workspace if available
+    if not search_path:
+        active = get_active_workspace()
+        if active:
+            search_path = active
 
     result = get_search(
         pattern=pattern,
-        path=path,
+        path=search_path,
         glob=glob,
         case_sensitive=case_sensitive,
         max_results=max_results,

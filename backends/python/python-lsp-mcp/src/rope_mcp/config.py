@@ -328,20 +328,43 @@ def is_file_in_workspace(file_path: str) -> bool:
     return abs_file.startswith(_active_workspace)
 
 
-def validate_file_workspace(file_path: str) -> Optional[dict]:
-    """Validate that a file is within the active workspace.
+def resolve_file_path(file_path: str) -> tuple[Optional[str], Optional[dict]]:
+    """Resolve a file path and validate it against the active workspace.
+
+    Supports:
+    1. Absolute paths (must be within active workspace)
+    2. Relative paths (resolved against active workspace)
 
     Args:
-        file_path: Path to the file
+        file_path: Path to the file (absolute or relative)
 
     Returns:
-        Error dict if file is outside workspace, None otherwise.
+        Tuple of (absolute_path, error_dict).
+        If success, absolute_path is set and error_dict is None.
+        If failure, absolute_path is None and error_dict contains the error.
     """
-    if not is_file_in_workspace(file_path):
-        return {
+    path_obj = Path(file_path)
+
+    # Handle relative paths
+    if not path_obj.is_absolute():
+        if _active_workspace:
+            abs_path = os.path.join(_active_workspace, file_path)
+        else:
+            # If no workspace set, we can't resolve relative paths reliably
+            # But for backward compatibility with "no workspace" mode, we might assume cwd
+            abs_path = os.path.abspath(file_path)
+    else:
+        abs_path = str(path_obj)
+
+    # Normalize path
+    abs_path = os.path.abspath(abs_path)
+
+    # Validate against workspace
+    if _active_workspace and not abs_path.startswith(_active_workspace):
+        return None, {
             "error": "Context Mismatch",
             "message": (
-                f"The file '{file_path}' is outside the active workspace '{_active_workspace}'.\n\n"
+                f"The file '{file_path}' resolves to '{abs_path}', which is outside the active workspace '{_active_workspace}'.\n\n"
                 "Current Logic:\n"
                 "1. I only analyze files from the active project to ensure accuracy and save resources.\n"
                 "2. You must explicitly switch the workspace if you want to work on a different project.\n\n"
@@ -349,8 +372,19 @@ def validate_file_workspace(file_path: str) -> Optional[dict]:
                 "Please call 'switch_workspace(path=\"...\")' with the new project root before retrying."
             ),
             "current_workspace": _active_workspace,
+            "resolved_path": abs_path
         }
-    return None
+
+    return abs_path, None
+
+
+def validate_file_workspace(file_path: str) -> Optional[dict]:
+    """Validate that a file is within the active workspace.
+    
+    Deprecated: Use resolve_file_path instead.
+    """
+    _, error = resolve_file_path(file_path)
+    return error
 
 
 def set_python_path(python_path: str, workspace: Optional[str] = None) -> dict:

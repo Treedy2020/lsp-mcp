@@ -35,6 +35,7 @@ import {
   getProjectConfig,
   setActiveWorkspace,
   validateFileWorkspace,
+  resolveFilePath,
   clearAllCaches,
 } from "./ts-service.js";
 
@@ -98,18 +99,18 @@ server.tool(
   "hover",
   "Get type information and documentation at a specific position in a TypeScript/JavaScript file",
   {
-    file: z.string().describe("Absolute path to the file"),
+    file: z.string().describe("Path to the file (absolute or relative to active workspace)"),
     line: z.number().int().positive().describe("Line number (1-based)"),
     column: z.number().int().positive().describe("Column number (1-based)"),
   },
   async ({ file, line, column }) => {
     try {
-      const error = validateFileWorkspace(file);
-      if (error) {
-        return { content: [{ type: "text", text: error }] };
+      const { absPath, error } = resolveFilePath(file);
+      if (error || !absPath) {
+        return { content: [{ type: "text", text: error || "Invalid path" }] };
       }
 
-      const info = getQuickInfo(file, line, column);
+      const info = getQuickInfo(absPath, line, column);
       if (!info) {
         return {
           content: [{ type: "text", text: JSON.stringify({ error: "No information available at this position" }) }],
@@ -149,18 +150,18 @@ server.tool(
   "definition",
   "Go to definition of a symbol at a specific position",
   {
-    file: z.string().describe("Absolute path to the file"),
+    file: z.string().describe("Path to the file (absolute or relative to active workspace)"),
     line: z.number().int().positive().describe("Line number (1-based)"),
     column: z.number().int().positive().describe("Column number (1-based)"),
   },
   async ({ file, line, column }) => {
     try {
-      const error = validateFileWorkspace(file);
-      if (error) {
-        return { content: [{ type: "text", text: error }] };
+      const { absPath, error } = resolveFilePath(file);
+      if (error || !absPath) {
+        return { content: [{ type: "text", text: error || "Invalid path" }] };
       }
 
-      const definitions = getDefinition(file, line, column);
+      const definitions = getDefinition(absPath, line, column);
       if (!definitions || definitions.length === 0) {
         return {
           content: [{ type: "text", text: JSON.stringify({ error: "No definition found" }) }],
@@ -204,18 +205,18 @@ server.tool(
   "references",
   "Find all references to a symbol at a specific position",
   {
-    file: z.string().describe("Absolute path to the file"),
+    file: z.string().describe("Path to the file (absolute or relative to active workspace)"),
     line: z.number().int().positive().describe("Line number (1-based)"),
     column: z.number().int().positive().describe("Column number (1-based)"),
   },
   async ({ file, line, column }) => {
     try {
-      const error = validateFileWorkspace(file);
-      if (error) {
-        return { content: [{ type: "text", text: error }] };
+      const { absPath, error } = resolveFilePath(file);
+      if (error || !absPath) {
+        return { content: [{ type: "text", text: error || "Invalid path" }] };
       }
 
-      const refs = getReferences(file, line, column);
+      const refs = getReferences(absPath, line, column);
       if (!refs || refs.length === 0) {
         return {
           content: [{ type: "text", text: JSON.stringify({ references: [], count: 0 }) }],
@@ -254,19 +255,19 @@ server.tool(
   "completions",
   "Get code completion suggestions at a specific position",
   {
-    file: z.string().describe("Absolute path to the file"),
+    file: z.string().describe("Path to the file (absolute or relative to active workspace)"),
     line: z.number().int().positive().describe("Line number (1-based)"),
     column: z.number().int().positive().describe("Column number (1-based)"),
     limit: z.number().int().positive().default(20).describe("Maximum number of completions to return"),
   },
   async ({ file, line, column, limit }) => {
     try {
-      const error = validateFileWorkspace(file);
-      if (error) {
-        return { content: [{ type: "text", text: error }] };
+      const { absPath, error } = resolveFilePath(file);
+      if (error || !absPath) {
+        return { content: [{ type: "text", text: error || "Invalid path" }] };
       }
 
-      const completions = getCompletions(file, line, column);
+      const completions = getCompletions(absPath, line, column);
       if (!completions) {
         return {
           content: [{ type: "text", text: JSON.stringify({ completions: [], count: 0 }) }],
@@ -306,18 +307,18 @@ server.tool(
   "signature_help",
   "Get function signature help at a specific position",
   {
-    file: z.string().describe("Absolute path to the file"),
+    file: z.string().describe("Path to the file (absolute or relative to active workspace)"),
     line: z.number().int().positive().describe("Line number (1-based)"),
     column: z.number().int().positive().describe("Column number (1-based)"),
   },
   async ({ file, line, column }) => {
     try {
-      const error = validateFileWorkspace(file);
-      if (error) {
-        return { content: [{ type: "text", text: error }] };
+      const { absPath, error } = resolveFilePath(file);
+      if (error || !absPath) {
+        return { content: [{ type: "text", text: error || "Invalid path" }] };
       }
 
-      const help = getSignatureHelp(file, line, column);
+      const help = getSignatureHelp(absPath, line, column);
       if (!help) {
         return {
           content: [{ type: "text", text: JSON.stringify({ error: "No signature help available" }) }],
@@ -361,17 +362,17 @@ server.tool(
   "symbols",
   "Extract symbols (classes, functions, methods, variables) from a file",
   {
-    file: z.string().describe("Absolute path to the file"),
+    file: z.string().describe("Path to the file (absolute or relative to active workspace)"),
     query: z.string().optional().describe("Optional filter query for symbol names"),
   },
   async ({ file, query }) => {
     try {
-      const error = validateFileWorkspace(file);
-      if (error) {
-        return { content: [{ type: "text", text: error }] };
+      const { absPath, error } = resolveFilePath(file);
+      if (error || !absPath) {
+        return { content: [{ type: "text", text: error || "Invalid path" }] };
       }
 
-      const tree = getDocumentSymbols(file);
+      const tree = getDocumentSymbols(absPath);
 
       const symbols: Array<{
         name: string;
@@ -381,7 +382,7 @@ server.tool(
         children?: Array<{ name: string; kind: string; line: number; column: number }>;
       }> = [];
 
-      const content = getFileContent(file);
+      const content = getFileContent(absPath);
 
       function processNode(node: any, parent?: any) {
         if (!node.nameSpan) return;
@@ -446,16 +447,15 @@ server.tool(
   "diagnostics",
   "Get type errors and warnings for a TypeScript/JavaScript file",
   {
-    path: z.string().describe("Path to a file or directory to check"),
+    path: z.string().describe("Path to a file or directory to check (absolute or relative to active workspace)"),
   },
   async ({ path: inputPath }) => {
     try {
-      const error = validateFileWorkspace(inputPath);
-      if (error) {
-        return { content: [{ type: "text", text: error }] };
+      const { absPath, error } = resolveFilePath(inputPath);
+      if (error || !absPath) {
+        return { content: [{ type: "text", text: error || "Invalid path" }] };
       }
 
-      const absPath = path.resolve(inputPath);
       const stats = fs.statSync(absPath);
 
       let files: string[] = [];
@@ -512,19 +512,19 @@ server.tool(
   "rename",
   "Preview renaming a symbol at a specific position (shows all locations that would be renamed)",
   {
-    file: z.string().describe("Absolute path to the file"),
+    file: z.string().describe("Path to the file (absolute or relative to active workspace)"),
     line: z.number().int().positive().describe("Line number (1-based)"),
     column: z.number().int().positive().describe("Column number (1-based)"),
     newName: z.string().describe("New name for the symbol"),
   },
   async ({ file, line, column, newName }) => {
     try {
-      const error = validateFileWorkspace(file);
-      if (error) {
-        return { content: [{ type: "text", text: error }] };
+      const { absPath, error } = resolveFilePath(file);
+      if (error || !absPath) {
+        return { content: [{ type: "text", text: error || "Invalid path" }] };
       }
 
-      const locations = getRenameLocations(file, line, column);
+      const locations = getRenameLocations(absPath, line, column);
       if (!locations || locations.length === 0) {
         return {
           content: [{ type: "text", text: JSON.stringify({ error: "Cannot rename symbol at this position" }) }],
@@ -575,21 +575,21 @@ server.tool(
   "update_document",
   "Update file content for incremental analysis without writing to disk",
   {
-    file: z.string().describe("Absolute path to the file"),
+    file: z.string().describe("Path to the file (absolute or relative to active workspace)"),
     content: z.string().describe("New content for the file"),
   },
   async ({ file, content }) => {
     try {
-      const error = validateFileWorkspace(file);
-      if (error) {
-        return { content: [{ type: "text", text: error }] };
+      const { absPath, error } = resolveFilePath(file);
+      if (error || !absPath) {
+        return { content: [{ type: "text", text: error || "Invalid path" }] };
       }
 
-      updateDocument(file, content);
+      updateDocument(absPath, content);
       return {
         content: [{
           type: "text",
-          text: JSON.stringify({ success: true, file }),
+          text: JSON.stringify({ success: true, file: absPath }),
         }],
       };
     } catch (error) {
@@ -607,16 +607,15 @@ server.tool(
   "status",
   "Check TypeScript environment status for a project. Shows parsed config and any errors.",
   {
-    file: z.string().describe("A TypeScript/JavaScript file path to check the project status for"),
+    file: z.string().describe("A TypeScript/JavaScript file path to check the project status for (absolute or relative to active workspace)"),
   },
   async ({ file }) => {
     try {
-      const error = validateFileWorkspace(file);
-      if (error) {
-        return { content: [{ type: "text", text: error }] };
+      const { absPath, error } = resolveFilePath(file);
+      if (error || !absPath) {
+        return { content: [{ type: "text", text: error || "Invalid path" }] };
       }
 
-      const absPath = path.resolve(file);
       const projectRoot = findProjectRoot(absPath);
       const configPath = path.join(projectRoot, "tsconfig.json");
 
@@ -728,18 +727,36 @@ server.tool(
   "Search for a pattern in files using ripgrep",
   {
     pattern: z.string().describe("The regex pattern to search for"),
-    path: z.string().optional().describe("Directory or file to search in"),
+    path: z.string().optional().describe("Directory or file to search in (absolute or relative to active workspace)"),
     glob: z.string().optional().describe("Glob pattern to filter files (e.g., '*.ts')"),
     caseSensitive: z.boolean().default(true).describe("Whether the search is case sensitive"),
     maxResults: z.number().int().positive().default(50).describe("Maximum number of results"),
   },
   async ({ pattern, path: searchPath, glob, caseSensitive, maxResults }) => {
     try {
+      let absSearchPath: string | undefined;
+      
       if (searchPath) {
-        const error = validateFileWorkspace(searchPath);
-        if (error) {
-          return { content: [{ type: "text", text: error }] };
+        const { absPath, error } = resolveFilePath(searchPath);
+        if (error || !absPath) {
+          return { content: [{ type: "text", text: error || "Invalid path" }] };
         }
+        absSearchPath = absPath;
+      } else {
+        // Default to active workspace if set
+        const active = import("./ts-service.js").then(m => m.getActiveWorkspace()); // Dynamic import to avoid circular dependency issues if any, though here it's fine
+        // Actually we can just use the function we imported
+        // But getActiveWorkspace is synchronous
+        // Let's just use what we have
+        // But we need to check if we have an active workspace
+        // We can't access activeWorkspace variable directly as it is not exported, use getter
+        // Wait, we imported resolveFilePath, let's use a helper or modify logic
+        // We can use resolveFilePath(".") to get the workspace root if set
+        const { absPath } = resolveFilePath(".");
+        // If we are in a workspace, absPath will be the workspace root
+        // If not, it will be cwd. 
+        // This is fine for search default.
+        if (absPath) absSearchPath = absPath;
       }
 
       const { execSync } = await import("child_process");
@@ -749,7 +766,7 @@ server.tool(
       if (glob) args.push("-g", glob);
       args.push("--max-count", maxResults.toString());
       args.push(pattern);
-      if (searchPath) args.push(searchPath);
+      if (absSearchPath) args.push(absSearchPath);
 
       const result = execSync(args.join(" "), {
         encoding: "utf-8",
@@ -808,7 +825,7 @@ server.tool(
   "move",
   "Move a function, class, or variable to a new file. Uses TypeScript's 'Move to a new file' refactoring.",
   {
-    file: z.string().describe("Absolute path to the file"),
+    file: z.string().describe("Path to the file (absolute or relative to active workspace)"),
     line: z.number().int().positive().describe("Line number (1-based)"),
     column: z.number().int().positive().describe("Column number (1-based)"),
     destination: z.string().optional().describe("Destination file path (optional, TypeScript will generate a name if not provided)"),
@@ -816,13 +833,13 @@ server.tool(
   },
   async ({ file, line, column, destination, preview }) => {
     try {
-      const error = validateFileWorkspace(file);
-      if (error) {
-        return { content: [{ type: "text", text: error }] };
+      const { absPath, error } = resolveFilePath(file);
+      if (error || !absPath) {
+        return { content: [{ type: "text", text: error || "Invalid path" }] };
       }
 
       // Get available refactorings
-      const refactors = getApplicableRefactors(file, line, column);
+      const refactors = getApplicableRefactors(absPath, line, column);
 
       // Look for "Move to a new file" refactoring
       const moveRefactor = refactors.find(
@@ -848,7 +865,7 @@ server.tool(
       const moveAction = moveRefactor.actions.find((a) => a.name.includes("Move")) || moveRefactor.actions[0];
 
       // Get the edits
-      const edits = getRefactorEdits(file, line, column, moveRefactor.name, moveAction.name);
+      const edits = getRefactorEdits(absPath, line, column, moveRefactor.name, moveAction.name);
 
       if (!edits || !edits.edits.length) {
         return {
@@ -904,18 +921,18 @@ server.tool(
   "function_signature",
   "Get the current signature of a function at a specific position",
   {
-    file: z.string().describe("Absolute path to the file"),
+    file: z.string().describe("Path to the file (absolute or relative to active workspace)"),
     line: z.number().int().positive().describe("Line number (1-based)"),
     column: z.number().int().positive().describe("Column number (1-based)"),
   },
   async ({ file, line, column }) => {
     try {
-      const error = validateFileWorkspace(file);
-      if (error) {
-        return { content: [{ type: "text", text: error }] };
+      const { absPath, error } = resolveFilePath(file);
+      if (error || !absPath) {
+        return { content: [{ type: "text", text: error || "Invalid path" }] };
       }
 
-      const signature = getFunctionSignature(file, line, column);
+      const signature = getFunctionSignature(absPath, line, column);
 
       if (!signature) {
         return {
@@ -944,18 +961,18 @@ server.tool(
   "available_refactors",
   "Get available refactoring actions at a specific position",
   {
-    file: z.string().describe("Absolute path to the file"),
+    file: z.string().describe("Path to the file (absolute or relative to active workspace)"),
     line: z.number().int().positive().describe("Line number (1-based)"),
     column: z.number().int().positive().describe("Column number (1-based)"),
   },
   async ({ file, line, column }) => {
     try {
-      const error = validateFileWorkspace(file);
-      if (error) {
-        return { content: [{ type: "text", text: error }] };
+      const { absPath, error } = resolveFilePath(file);
+      if (error || !absPath) {
+        return { content: [{ type: "text", text: error || "Invalid path" }] };
       }
 
-      const refactors = getApplicableRefactors(file, line, column);
+      const refactors = getApplicableRefactors(absPath, line, column);
 
       const result = refactors.map((r) => ({
         name: r.name,
@@ -987,7 +1004,7 @@ server.tool(
   "apply_refactor",
   "Apply a specific refactoring action at a position",
   {
-    file: z.string().describe("Absolute path to the file"),
+    file: z.string().describe("Path to the file (absolute or relative to active workspace)"),
     line: z.number().int().positive().describe("Line number (1-based)"),
     column: z.number().int().positive().describe("Column number (1-based)"),
     refactorName: z.string().describe("Name of the refactoring (from available_refactors)"),
@@ -996,12 +1013,12 @@ server.tool(
   },
   async ({ file, line, column, refactorName, actionName, preview }) => {
     try {
-      const error = validateFileWorkspace(file);
-      if (error) {
-        return { content: [{ type: "text", text: error }] };
+      const { absPath, error } = resolveFilePath(file);
+      if (error || !absPath) {
+        return { content: [{ type: "text", text: error || "Invalid path" }] };
       }
 
-      const edits = getRefactorEdits(file, line, column, refactorName, actionName);
+      const edits = getRefactorEdits(absPath, line, column, refactorName, actionName);
 
       if (!edits || !edits.edits.length) {
         return {

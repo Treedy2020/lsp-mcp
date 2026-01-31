@@ -323,17 +323,54 @@ export function isFileInWorkspace(filePath: string): boolean {
 }
 
 /**
+ * Resolve a file path and validate it against the active workspace.
+ *
+ * Supports:
+ * 1. Absolute paths (must be within active workspace)
+ * 2. Relative paths (resolved against active workspace)
+ */
+export function resolveFilePath(filePath: string): { absPath: string | null; error: string | null } {
+  const pathObj = path.parse(filePath);
+  let absPath: string;
+
+  // Handle relative paths
+  if (!path.isAbsolute(filePath)) {
+    if (activeWorkspace) {
+      absPath = path.resolve(activeWorkspace, filePath);
+    } else {
+      // If no workspace set, assume cwd or just resolve relative to process
+      absPath = path.resolve(filePath);
+    }
+  } else {
+    absPath = filePath;
+  }
+
+  // Normalize path
+  absPath = path.resolve(absPath);
+
+  // Validate against workspace
+  if (activeWorkspace && !absPath.startsWith(activeWorkspace)) {
+    return {
+      absPath: null,
+      error: JSON.stringify({
+        error: "Context Mismatch",
+        message: `The file '${filePath}' resolves to '${absPath}', which is outside the active workspace '${activeWorkspace}'.\n\nCurrent Logic:\n1. I only analyze files from the active project to ensure accuracy and save resources.\n2. You must explicitly switch the workspace if you want to work on a different project.\n\nAction Required:\nPlease call 'switch_workspace(path=\"...\")' with the new project root before retrying.`,
+        currentWorkspace: activeWorkspace,
+        resolvedPath: absPath,
+      }),
+    };
+  }
+
+  return { absPath, error: null };
+}
+
+/**
  * Validate that a file is within the active workspace.
+ * @deprecated Use resolveFilePath instead.
  */
 export function validateFileWorkspace(filePath: string): string | null {
-  if (!isFileInWorkspace(filePath)) {
-    return JSON.stringify({
-      error: "Context Mismatch",
-      message: `The file '${filePath}' is outside the active workspace '${activeWorkspace}'.\n\nCurrent Logic:\n1. I only analyze files from the active project to ensure accuracy and save resources.\n2. You must explicitly switch the workspace if you want to work on a different project.\n\nAction Required:\nPlease call 'switch_workspace(path=\"...\")' with the new project root before retrying.`,
-      currentWorkspace: activeWorkspace,
-    });
-  }
-  return null;
+  const { error } = resolveFilePath(filePath);
+  return error;
 }
 
 /**
