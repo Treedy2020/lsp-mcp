@@ -8,7 +8,6 @@ from .symbols import get_symbols
 from .rename import do_rename
 from .move import do_move
 from .change_signature import do_change_signature, get_function_signature
-from .diagnostics import get_diagnostics
 from .search import get_search
 
 __all__ = [
@@ -21,6 +20,5 @@ __all__ = [
     "do_move",
     "do_change_signature",
     "get_function_signature",
-    "get_diagnostics",
     "get_search",
 ]

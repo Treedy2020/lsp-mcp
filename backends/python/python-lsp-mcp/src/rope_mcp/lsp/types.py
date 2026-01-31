@@ -80,3 +80,4 @@ class DocumentState:
     version: int
     content: str
     language_id: str = "python"
+    diagnostics: list = None

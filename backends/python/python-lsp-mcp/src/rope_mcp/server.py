@@ -38,7 +38,6 @@ from .tools import (
     get_hover as rope_hover,
     get_references as rope_references,
     get_symbols as rope_symbols,
-    get_diagnostics,
     get_search,
 )
 
@@ -488,12 +487,12 @@ def function_signature(file: str, line: int, column: int) -> str:
 
 @mcp.tool()
 def diagnostics(path: str) -> str:
-    """Get type errors and warnings for a Python file or directory.
+    """Get type errors and warnings for a Python file.
 
-    Uses Pyright for type checking. Requires Pyright to be installed.
+    Uses Pyright LSP for type checking.
 
     Args:
-        path: Path to a Python file or directory (absolute or relative to active workspace)
+        path: Path to a Python file (absolute or relative to active workspace)
 
     Returns:
         JSON string with diagnostics or error message
@@ -503,9 +502,13 @@ def diagnostics(path: str) -> str:
     if error:
         return json.dumps(error, indent=2)
 
-    result = get_diagnostics(abs_path)
-    result["backend"] = "pyright"
-    return json.dumps(result, indent=2)
+    try:
+        workspace = _find_workspace(abs_path)
+        client = get_lsp_client(workspace)
+        result = client.get_diagnostics(abs_path)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e), "backend": "pyright-lsp"}, indent=2)
 
 
 @mcp.tool()

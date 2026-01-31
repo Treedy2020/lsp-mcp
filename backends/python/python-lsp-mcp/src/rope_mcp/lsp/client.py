@@ -83,15 +83,147 @@ class LspClient:
                 message = json.loads(content.decode())
 
                 # Handle response
-                if "id" in message and message["id"] in self._pending_requests:
-                    req_id = message["id"]
-                    self._responses[req_id] = message
-                    self._pending_requests[req_id].set()
+                if "id" in message:
+                    if "method" in message:
+                        # Server Request
+                        self._handle_server_request(message)
+                    elif message["id"] in self._pending_requests:
+                        # Server Response to our request
+                        req_id = message["id"]
+                        self._responses[req_id] = message
+                        self._pending_requests[req_id].set()
+                elif "method" in message:
+                    # Server Notification
+                    self._handle_server_notification(message)
 
             except Exception:
                 if self._running:
                     continue
                 break
+
+    def _handle_server_notification(self, message: dict) -> None:
+        """Handle a notification from the server."""
+        method = message.get("method")
+        params = message.get("params", {})
+        
+        if method == "textDocument/publishDiagnostics":
+            uri = params.get("uri")
+            diagnostics = params.get("diagnostics", [])
+            
+            # Normalize URI to match our internal map
+            # Pyright might send "file:///path" while we stored "file:///path"
+            # But we need to check if it's in our _documents
+            if uri in self._documents:
+                self._documents[uri].diagnostics = diagnostics
+                # Signal update if someone is waiting
+                if hasattr(self._documents[uri], "update_event"):
+                    self._documents[uri].update_event.set()
+            else:
+                # Try decoding uri if keys don't match exactly
+                path = self._uri_to_path(uri)
+                uri_key = self._path_to_uri(path)
+                if uri_key in self._documents:
+                    self._documents[uri_key].diagnostics = diagnostics
+                    if hasattr(self._documents[uri_key], "update_event"):
+                        self._documents[uri_key].update_event.set()
+
+    def get_diagnostics(self, file_path: str, timeout: float = 3.0) -> dict:
+        """Get diagnostics for a file."""
+        # Force re-open to trigger fresh diagnostics
+        # This ensures we get the latest state including any config changes
+        if self._path_to_uri(file_path) in self._documents:
+            self.close_document(file_path)
+            
+        # Create event before opening
+        uri = self._path_to_uri(file_path)
+        
+        # We need to access _documents but it's created in open_document
+        # So we can't attach event yet.
+        
+        self.open_document(file_path)
+        doc = self._documents.get(uri)
+        if not doc:
+            return {"error": "Failed to open document"}
+            
+        doc.update_event = threading.Event()
+        
+        # Wait for diagnostics
+        doc.update_event.wait(timeout)
+        
+        diags = doc.diagnostics or []
+        
+        formatted = []
+        for d in diags:
+            formatted.append({
+                "file": file_path,
+                "line": d["range"]["start"]["line"] + 1,
+                "column": d["range"]["start"]["character"] + 1,
+                "end_line": d["range"]["end"]["line"] + 1,
+                "end_column": d["range"]["end"]["character"] + 1,
+                "severity": self._severity_to_string(d.get("severity", 1)),
+                "message": d["message"],
+                "code": d.get("code")
+            })
+            
+        return {
+            "diagnostics": formatted,
+            "summary": {
+                "files_analyzed": 1,
+                "errors": len([d for d in formatted if d["severity"] == "error"]),
+                "warnings": len([d for d in formatted if d["severity"] == "warning"]),
+                "informations": len([d for d in formatted if d["severity"] == "information"]),
+            },
+            "backend": "pyright-lsp"
+        }
+
+    def _severity_to_string(self, severity: int) -> str:
+        mapping = {1: "error", 2: "warning", 3: "information", 4: "hint"}
+        return mapping.get(severity, "error")
+
+    def _handle_server_request(self, message: dict) -> None:
+        """Handle a request from the server."""
+        method = message.get("method")
+        req_id = message.get("id")
+        
+        if method == "workspace/configuration":
+            # Pyright asking for config
+            items = message.get("params", {}).get("items", [])
+            result = []
+            for item in items:
+                section = item.get("section")
+                if section == "python.analysis":
+                    result.append({
+                        "typeCheckingMode": "basic",
+                        "reportUnusedImport": "warning",
+                        "reportUnusedVariable": "warning",
+                        "autoImportCompletions": True,
+                        "autoSearchPaths": True,
+                        "useLibraryCodeForTypes": True
+                    })
+                else:
+                    result.append({})
+            
+            self._send_response(req_id, result)
+            
+        elif method == "client/registerCapability":
+            # Just acknowledge
+            self._send_response(req_id, None)
+
+    def _send_response(self, req_id: Any, result: Any) -> None:
+        """Send a JSON-RPC response."""
+        if not self._process or not self._process.stdin:
+            return
+            
+        message = {"jsonrpc": "2.0", "id": req_id, "result": result}
+        content = json.dumps(message)
+        header = f"Content-Length: {len(content)}\r\n\r\n"
+        
+        try:
+            with self._lock: # Protect stdin write
+                self._process.stdin.write(header.encode() + content.encode())
+                self._process.stdin.flush()
+        except Exception:
+            pass
 
     def _send_message(self, message: dict) -> None:
         """Send a JSON-RPC message to the server."""
@@ -197,6 +329,19 @@ class LspClient:
                     "name": Path(self.workspace_root).name,
                 }
             ],
+            "initializationOptions": {
+                "python": {
+                    "analysis": {
+                        # Default to basic mode but enable useful hints
+                        "typeCheckingMode": "basic",
+                        "reportUnusedImport": "warning",
+                        "reportUnusedVariable": "warning",
+                        "autoImportCompletions": True,
+                        "autoSearchPaths": True,
+                        "useLibraryCodeForTypes": True
+                    }
+                }
+            }
         }
 
         self._send_request("initialize", init_params)
