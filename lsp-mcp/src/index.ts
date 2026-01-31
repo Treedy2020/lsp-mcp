@@ -17,6 +17,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { createRequire } from "module";
 import * as fs from "fs";
+import * as path from "path";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 
 import { loadConfig, inferLanguageFromPath, type PythonProvider, type Language } from "./config.js";
