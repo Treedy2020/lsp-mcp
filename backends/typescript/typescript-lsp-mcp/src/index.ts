@@ -37,6 +37,8 @@ import {
   validateFileWorkspace,
   resolveFilePath,
   clearAllCaches,
+  getCombinedCodeActions,
+  applyQuickFix,
 } from "./ts-service.js";
 
 // Read version from package.json
@@ -48,6 +50,109 @@ const server = new McpServer({
   name: "typescript-lsp-mcp",
   version: packageJson.version,
 });
+
+// ============================================================================
+// Tool: code_action
+// ============================================================================
+server.tool(
+  "code_action",
+  "Get available code actions (refactors and quick fixes) at a specific position",
+  {
+    file: z.string().describe("Path to the file"),
+    line: z.number().int().positive().describe("Line number"),
+    column: z.number().int().positive().describe("Column number"),
+  },
+  async ({ file, line, column }) => {
+    try {
+      const { absPath, error } = resolveFilePath(file);
+      if (error || !absPath) {
+        return { content: [{ type: "text", text: error || "Invalid path" }] };
+      }
+
+      const actions = getCombinedCodeActions(absPath, line, column);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({ actions, count: actions.length }),
+        }],
+      };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: JSON.stringify({ error: String(error) }) }],
+      };
+    }
+  }
+);
+
+// ============================================================================
+// Tool: run_code_action
+// ============================================================================
+server.tool(
+  "run_code_action",
+  "Apply a code action (refactor or quick fix)",
+  {
+    file: z.string().describe("Path to the file"),
+    line: z.number().int().positive().describe("Line number"),
+    column: z.number().int().positive().describe("Column number"),
+    kind: z.enum(["refactor", "quickfix"]).describe("Kind of action"),
+    name: z.string().describe("Name of the refactor or fix"),
+    actionName: z.string().optional().describe("Action name (required for refactors)"),
+    preview: z.boolean().default(false).describe("If true, only show what would change"),
+  },
+  async ({ file, line, column, kind, name, actionName, preview }) => {
+    try {
+      const { absPath, error } = resolveFilePath(file);
+      if (error || !absPath) {
+        return { content: [{ type: "text", text: error || "Invalid path" }] };
+      }
+
+      let changes;
+      
+      if (kind === "refactor") {
+        if (!actionName) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: "actionName is required for refactors" }) }] };
+        }
+        const edits = getRefactorEdits(absPath, line, column, name, actionName);
+        changes = edits?.edits;
+      } else {
+        // Quick Fix
+        changes = applyQuickFix(absPath, line, column, name);
+      }
+
+      if (!changes || changes.length === 0) {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ error: "No changes generated" }) }],
+        };
+      }
+
+      if (preview) {
+        const previewChanges = changes.map((edit) => ({
+          file: edit.fileName,
+          isNewFile: edit.isNewFile,
+          changes: edit.textChanges.length,
+        }));
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({ preview: true, changes: previewChanges }),
+          }],
+        };
+      }
+
+      const result = applyFileChanges(changes);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({ success: true, ...result }),
+        }],
+      };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: JSON.stringify({ error: String(error) }) }],
+      };
+    }
+  }
+);
 
 // ============================================================================
 // Tool: switch_workspace

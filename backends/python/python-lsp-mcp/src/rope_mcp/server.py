@@ -573,6 +573,158 @@ def update_document(file: str, content: str) -> str:
 
 
 @mcp.tool()
+def code_action(file: str, line: int, column: int) -> str:
+    """Get available code actions (Quick Fixes and Refactorings).
+
+    Args:
+        file: Path to the Python file
+        line: 1-based line number
+        column: 1-based column number
+
+    Returns:
+        JSON string with list of actions
+    """
+    # Resolve and validate path
+    abs_file, error = resolve_file_path(file)
+    if error:
+        return json.dumps(error, indent=2)
+
+    try:
+        workspace = _find_workspace(abs_file)
+        client = get_lsp_client(workspace)
+        
+        # 1. Get diagnostics to provide context
+        # In a real IDE, we'd pass active diagnostics. Here we fetch them.
+        # Note: This might be slow if we do full check. 
+        # For Pyright, we can pass empty diagnostics context and it might still return some actions,
+        # but usually it needs context.
+        # Let's try to get diagnostics for this file first.
+        # We can't easily get diagnostics without running the full check which is slow.
+        # For now, let's pass empty list and see what Pyright gives (e.g. Organize Imports usually works).
+        
+        # Actually, let's try to fetch diagnostics if possible, or just pass context.
+        diagnostics = [] # Placeholder
+        
+        actions = client.code_action(abs_file, line, column, line, column, diagnostics)
+        
+        # Format for MCP
+        formatted = []
+        for action in actions:
+            formatted.append({
+                "title": action.get("title", "Unknown Action"),
+                "kind": action.get("kind", "quickfix"),
+                "command": action.get("command"),
+                "edit": action.get("edit"),
+                # We need to store enough info to run it
+                "data": action 
+            })
+            
+        return json.dumps({"actions": formatted, "count": len(formatted)}, indent=2)
+        
+    except Exception as e:
+        return json.dumps({"error": str(e), "backend": "pyright"}, indent=2)
+
+
+@mcp.tool()
+def run_code_action(
+    file: str, 
+    line: int, 
+    column: int, 
+    title: str
+) -> str:
+    """Run a specific code action.
+
+    Args:
+        file: Path to the Python file
+        line: 1-based line number
+        column: 1-based column number
+        title: The title of the action to run (must match one from code_action)
+
+    Returns:
+        JSON string with result
+    """
+    # Resolve and validate path
+    abs_file, error = resolve_file_path(file)
+    if error:
+        return json.dumps(error, indent=2)
+
+    try:
+        workspace = _find_workspace(abs_file)
+        client = get_lsp_client(workspace)
+        
+        # We need to fetch actions again to find the matching one and its edit/command
+        actions = client.code_action(abs_file, line, column, line, column, [])
+        
+        target_action = next((a for a in actions if a.get("title") == title), None)
+        if not target_action:
+            return json.dumps({"error": f"Action '{title}' not found. It may have expired."}, indent=2)
+            
+        # Handle WorkspaceEdit
+        if "edit" in target_action:
+            _apply_workspace_edit(target_action["edit"])
+            return json.dumps({"success": True, "message": "Applied workspace edit"}, indent=2)
+            
+        # Handle Command
+        if "command" in target_action:
+            # If command has arguments, we might need to execute it via LSP workspace/executeCommand
+            cmd = target_action["command"]
+            if isinstance(cmd, dict): # Command object
+                command_name = cmd["command"]
+                arguments = cmd.get("arguments", [])
+                
+                # Execute command via LSP
+                # We need to add execute_command to LspClient if not exists
+                # client.execute_command(command_name, arguments)
+                # For now, let's just say we don't support custom commands yet unless we add that method.
+                # Pyright's organize imports is a command.
+                return json.dumps({"error": "Command execution not yet supported", "command": command_name}, indent=2)
+        
+        return json.dumps({"success": True, "message": "Action executed (no-op?)"}, indent=2)
+
+    except Exception as e:
+        return json.dumps({"error": str(e), "backend": "pyright"}, indent=2)
+
+
+def _apply_workspace_edit(edit: dict) -> None:
+    """Apply a WorkspaceEdit to files on disk."""
+    changes = edit.get("changes", {})
+    
+    for uri, text_edits in changes.items():
+        file_path = uri.replace("file://", "")
+        if sys.platform == "win32" and file_path.startswith("/"):
+            file_path = file_path[1:]
+            
+        if not os.path.exists(file_path):
+            continue
+            
+        with open(file_path, "r", encoding="utf-8") as f:
+            content = f.read()
+            
+        # Apply edits in reverse order
+        # Need to convert LSP line/col to offsets
+        # This requires robust handling. For now, let's use a simple approach if edits are sorted.
+        # But text_edits from LSP are not guaranteed sorted.
+        
+        # Sort edits by start position descending
+        text_edits.sort(key=lambda e: (e["range"]["start"]["line"], e["range"]["start"]["character"]), reverse=True)
+        
+        client = get_rope_client() # Use rope client for offset conversion helper
+        
+        for text_edit in text_edits:
+            start = text_edit["range"]["start"]
+            end = text_edit["range"]["end"]
+            new_text = text_edit["newText"]
+            
+            start_offset = client.position_to_offset(content, start["line"] + 1, start["character"] + 1)
+            end_offset = client.position_to_offset(content, end["line"] + 1, end["character"] + 1)
+            
+            content = content[:start_offset] + new_text + content[end_offset:]
+            
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+
+@mcp.tool()
 def search(
     pattern: str,
     path: Optional[str] = None,

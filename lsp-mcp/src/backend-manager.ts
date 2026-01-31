@@ -25,6 +25,8 @@ interface BackendState {
     version: string;
   };
   lastUsed: number;
+  retryCount: number;
+  lastCrashTime: number;
 }
 
 export interface BackendVersionInfo {
@@ -123,6 +125,90 @@ export class BackendManager {
   }
 
   /**
+   * Monitor backend for crashes and trigger recovery.
+   */
+  private monitorBackend(language: Language, transport: StdioClientTransport): void {
+    transport.onclose = async () => {
+      const state = this.backends.get(language);
+      // If manually stopped, do nothing
+      if (!state || state.status === "stopped") return;
+
+      console.error(`[BackendManager] ${language} backend connection closed unexpectedly.`);
+      state.status = "error";
+      state.lastError = "Connection closed unexpectedly";
+      await this.handleCrash(language);
+    };
+
+    transport.onerror = async (error) => {
+      const state = this.backends.get(language);
+      if (!state || state.status === "stopped") return;
+
+      console.error(`[BackendManager] ${language} backend transport error:`, error);
+      // onerror might not mean full crash, but usually precedes it
+    };
+  }
+
+  /**
+   * Handle backend crash with exponential backoff.
+   */
+  private async handleCrash(language: Language): Promise<void> {
+    const state = this.backends.get(language);
+    if (!state) return;
+
+    const now = Date.now();
+    // Reset retry count if last crash was over 1 hour ago
+    if (now - state.lastCrashTime > 3600 * 1000) {
+      state.retryCount = 0;
+    }
+
+    state.retryCount++;
+    state.lastCrashTime = now;
+
+    const maxRetries = 5;
+    if (state.retryCount > maxRetries) {
+      console.error(`[BackendManager] ${language} crashed too many times (${state.retryCount}). Giving up.`);
+      state.status = "error";
+      state.lastError = `Crashed ${state.retryCount} times. Manual restart required.`;
+      return;
+    }
+
+    const backoffMs = Math.min(1000 * Math.pow(2, state.retryCount - 1), 30000);
+    console.error(`[BackendManager] Restarting ${language} in ${backoffMs}ms (Attempt ${state.retryCount}/${maxRetries})...`);
+
+    // Wait and restart
+    await new Promise(resolve => setTimeout(resolve, backoffMs));
+    
+    // Check if we are still in a state that needs restart (might have been stopped manually during wait)
+    const currentState = this.backends.get(language);
+    if (!currentState || currentState.status === "stopped") return;
+
+    try {
+      // Remove old state to force fresh start
+      this.backends.delete(language);
+      const startPromise = this.startBackend(language);
+      this.startPromises.set(language, startPromise);
+      await startPromise;
+      this.startPromises.delete(language);
+      
+      // Restore retry state to the new instance so we don't reset count immediately
+      const newState = this.backends.get(language);
+      if (newState) {
+        newState.retryCount = state.retryCount;
+        newState.lastCrashTime = state.lastCrashTime;
+      }
+      console.error(`[BackendManager] ${language} recovered successfully.`);
+    } catch (error) {
+      console.error(`[BackendManager] Failed to recover ${language}:`, error);
+      // Recursively handle crash if restart fails immediately
+      // But we need to make sure we don't infinite loop if startBackend throws sync.
+      // startBackend creates state before throwing, so handleCrash should work if we put it back in map.
+      // Actually startBackend throws -> we catch -> we are here.
+      // We should probably rely on the next getBackend call or try again?
+      // For simplicity, just log. The next user call will try to start again.
+    }
+  }
+
+  /**
    * Start a backend subprocess for a language.
    */
   private async startBackend(language: Language): Promise<BackendState> {
@@ -162,9 +248,14 @@ export class BackendManager {
       status: "starting",
       restartCount: 0,
       lastUsed: Date.now(),
+      retryCount: 0,
+      lastCrashTime: 0,
     };
 
     this.backends.set(language, state);
+    
+    // Setup monitoring
+    this.monitorBackend(language, transport);
 
     try {
       // Connect to the backend
@@ -183,6 +274,9 @@ export class BackendManager {
       const toolsResponse = await client.listTools();
       state.tools = toolsResponse.tools;
       state.status = "ready";
+      // Reset retry count on successful sustained start (simplified: just set ready)
+      // We don't reset retryCount immediately to avoid crash loops that stay alive just long enough.
+      // We rely on the time-window check in handleCrash.
 
       console.error(
         `[BackendManager] ${language} backend ready: ${state.serverInfo?.name}@${state.serverInfo?.version} (${state.tools.length} tools)`
@@ -253,11 +347,9 @@ export class BackendManager {
    */
   async getAllTools(): Promise<Map<Language, Tool[]>> {
     const result = new Map<Language, Tool[]>();
-    const languages: Language[] = [];
-
-    if (this.config.python.enabled) languages.push("python");
-    if (this.config.typescript.enabled) languages.push("typescript");
-    if (this.config.vue.enabled) languages.push("vue");
+    const languages = Object.keys(this.config.languages).filter(
+      (lang) => this.config.languages[lang].enabled
+    );
 
     await Promise.all(
       languages.map(async (lang) => {
@@ -316,14 +408,10 @@ export class BackendManager {
     }
 
     // Add configured but not started backends
-    if (this.config.python.enabled && !this.backends.has("python")) {
-      status["python"] = { status: "not_started", tools: 0, restartCount: 0 };
-    }
-    if (this.config.typescript.enabled && !this.backends.has("typescript")) {
-      status["typescript"] = { status: "not_started", tools: 0, restartCount: 0 };
-    }
-    if (this.config.vue.enabled && !this.backends.has("vue")) {
-      status["vue"] = { status: "not_started", tools: 0, restartCount: 0 };
+    for (const [lang, config] of Object.entries(this.config.languages)) {
+      if (config.enabled && !this.backends.has(lang)) {
+        status[lang] = { status: "not_started", tools: 0, restartCount: 0 };
+      }
     }
 
     return status as Record<
@@ -337,11 +425,9 @@ export class BackendManager {
    */
   getVersions(): BackendVersionInfo[] {
     const versions: BackendVersionInfo[] = [];
-    const languages: Language[] = [];
-
-    if (this.config.python.enabled) languages.push("python");
-    if (this.config.typescript.enabled) languages.push("typescript");
-    if (this.config.vue.enabled) languages.push("vue");
+    const languages = Object.keys(this.config.languages).filter(
+      (lang) => this.config.languages[lang].enabled
+    );
 
     for (const lang of languages) {
       const backendConfig = getBackendCommand(lang, this.config);

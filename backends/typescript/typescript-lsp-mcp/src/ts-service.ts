@@ -675,6 +675,103 @@ export function displayPartsToString(
 }
 
 /**
+ * Get code fixes (Quick Fixes) at a position.
+ * Requires error codes, which we find by running diagnostics first.
+ */
+export function getCodeFixes(
+  filePath: string,
+  line: number,
+  column: number
+): readonly bundledTs.CodeFixAction[] {
+  const { service, absPath } = getServiceForFile(filePath);
+  const content = getFileContent(absPath);
+  const offset = positionToOffset(content, line, column);
+
+  // 1. Get diagnostics to find error codes at this position
+  const diagnostics = [
+    ...service.getSyntacticDiagnostics(absPath),
+    ...service.getSemanticDiagnostics(absPath),
+    ...service.getSuggestionDiagnostics(absPath),
+  ];
+
+  // Find diagnostics that overlap with the cursor position
+  const relevantDiagnostics = diagnostics.filter(diag => {
+    if (diag.start === undefined || diag.length === undefined) return false;
+    const end = diag.start + diag.length;
+    return offset >= diag.start && offset <= end;
+  });
+
+  const errorCodes = relevantDiagnostics.map(d => d.code);
+  if (errorCodes.length === 0) return [];
+
+  // 2. Get code fixes for these errors
+  return service.getCodeFixesAtPosition(
+    absPath,
+    offset,
+    offset,
+    errorCodes,
+    {}, // Format options
+    {}  // User preferences
+  );
+}
+
+/**
+ * Get both Refactors and Quick Fixes at a position.
+ */
+export function getCombinedCodeActions(
+  filePath: string,
+  line: number,
+  column: number
+): Array<{ name: string; description: string; kind: "refactor" | "quickfix"; actions: any[] }> {
+  const refactors = getApplicableRefactors(filePath, line, column);
+  const fixes = getCodeFixes(filePath, line, column);
+
+  const results = [];
+
+  // Add Refactors
+  for (const r of refactors) {
+    results.push({
+      name: r.name,
+      description: r.description,
+      kind: "refactor" as const,
+      actions: r.actions
+    });
+  }
+
+  // Add Quick Fixes (group them under a virtual "Quick Fix" category or individual)
+  // TS returns flat CodeFixAction list. We can group them.
+  if (fixes.length > 0) {
+    results.push({
+      name: "Quick Fix",
+      description: "Automated fixes for errors",
+      kind: "quickfix" as const,
+      actions: fixes.map(f => ({
+        name: f.fixName,
+        description: f.description,
+        changes: f.changes // Include changes directly as they are ready to apply
+      }))
+    });
+  }
+
+  return results;
+}
+
+/**
+ * Apply a specific Quick Fix.
+ * Since we don't store state, we need to regenerate the fix.
+ */
+export function applyQuickFix(
+  filePath: string,
+  line: number,
+  column: number,
+  fixName: string
+): bundledTs.FileTextChanges[] | undefined {
+  const fixes = getCodeFixes(filePath, line, column);
+  const fix = fixes.find(f => f.fixName === fixName);
+  return fix ? fix.changes : undefined;
+}
+
+/**
  * Get applicable refactorings at a position.
  */
 export function getApplicableRefactors(

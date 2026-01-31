@@ -170,6 +170,21 @@ class LspClient:
                     "definition": {"linkSupport": True},
                     "references": {},
                     "rename": {"prepareSupport": True},
+                    "codeAction": {
+                        "codeActionLiteralSupport": {
+                            "codeActionKind": {
+                                "valueSet": [
+                                    "quickfix",
+                                    "refactor",
+                                    "refactor.extract",
+                                    "refactor.inline",
+                                    "refactor.rewrite",
+                                    "source",
+                                    "source.organizeImports",
+                                ]
+                            }
+                        }
+                    },
                     "documentSymbol": {"hierarchicalDocumentSymbolSupport": True},
                     "publishDiagnostics": {},
                 },
@@ -430,6 +445,35 @@ class LspClient:
                 }
             )
         return completions
+
+    def code_action(
+        self,
+        file_path: str,
+        start_line: int,
+        start_col: int,
+        end_line: int,
+        end_col: int,
+        diagnostics: list = None,
+    ) -> list[dict]:
+        """Get available code actions."""
+        self.open_document(file_path)
+        uri = self._path_to_uri(file_path)
+
+        params = {
+            "textDocument": {"uri": uri},
+            "range": {
+                "start": {"line": start_line - 1, "character": start_col - 1},
+                "end": {"line": end_line - 1, "character": end_col - 1},
+            },
+            "context": {"diagnostics": diagnostics or []},
+        }
+
+        result = self._send_request("textDocument/codeAction", params)
+
+        if not result:
+            return []
+
+        return result
 
     def document_symbols(self, file_path: str) -> list[dict]:
         """Get document symbols."""
