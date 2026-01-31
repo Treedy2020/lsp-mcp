@@ -506,6 +506,22 @@ def diagnostics(path: str) -> str:
         workspace = _find_workspace(abs_path)
         client = get_lsp_client(workspace)
         result = client.get_diagnostics(abs_path)
+        
+        # Check for config file to warn about permissive defaults
+        has_config = False
+        for cfg in ["pyrightconfig.json", "pyproject.toml"]:
+            if os.path.exists(os.path.join(workspace, cfg)):
+                has_config = True
+                break
+                
+        if not has_config:
+            if "summary" not in result:
+                result["summary"] = {}
+            result["summary"]["note"] = (
+                "No 'pyrightconfig.json' or 'pyproject.toml' found. "
+                "Using permissive defaults. Create a config file to enable stricter checks (e.g. unused imports)."
+            )
+            
         return json.dumps(result, indent=2)
     except Exception as e:
         return json.dumps({"error": str(e), "backend": "pyright-lsp"}, indent=2)
