@@ -27,6 +27,9 @@ import {
   offsetToPosition,
   formatDiagnostic,
   getProjectStatus,
+  setActiveWorkspace,
+  validateFileWorkspace,
+  clearAllConnections,
 } from "./vue-service.js";
 
 // Direct TypeScript service as fallback
@@ -42,6 +45,10 @@ import {
 
 // Wrapper functions that try LSP first, then fallback to direct TS
 async function getQuickInfo(file: string, line: number, column: number) {
+  // Guard: check workspace
+  const error = validateFileWorkspace(file);
+  if (error) throw new Error(error);
+
   // Try LSP first
   const lspResult = await getLspQuickInfo(file, line, column);
   if (lspResult && lspResult.contents) {
@@ -52,6 +59,10 @@ async function getQuickInfo(file: string, line: number, column: number) {
 }
 
 async function getDefinition(file: string, line: number, column: number) {
+  // Guard: check workspace
+  const error = validateFileWorkspace(file);
+  if (error) throw new Error(error);
+
   const lspResult = await getLspDefinition(file, line, column);
   if (lspResult && lspResult.length > 0) {
     return lspResult;
@@ -60,6 +71,10 @@ async function getDefinition(file: string, line: number, column: number) {
 }
 
 async function getReferences(file: string, line: number, column: number) {
+  // Guard: check workspace
+  const error = validateFileWorkspace(file);
+  if (error) throw new Error(error);
+
   const lspResult = await getLspReferences(file, line, column);
   if (lspResult && lspResult.length > 0) {
     return lspResult;
@@ -68,6 +83,10 @@ async function getReferences(file: string, line: number, column: number) {
 }
 
 async function getCompletions(file: string, line: number, column: number, limit: number = 20) {
+  // Guard: check workspace
+  const error = validateFileWorkspace(file);
+  if (error) throw new Error(error);
+
   const lspResult = await getLspCompletions(file, line, column, limit);
   if (lspResult && lspResult.items && lspResult.items.length > 0) {
     return lspResult;
@@ -76,6 +95,10 @@ async function getCompletions(file: string, line: number, column: number, limit:
 }
 
 async function getSignatureHelp(file: string, line: number, column: number) {
+  // Guard: check workspace
+  const error = validateFileWorkspace(file);
+  if (error) throw new Error(error);
+
   const lspResult = await getLspSignatureHelp(file, line, column);
   if (lspResult && lspResult.signatures && lspResult.signatures.length > 0) {
     return lspResult;
@@ -92,6 +115,49 @@ const server = new McpServer({
   name: "vue-lsp-mcp",
   version: packageJson.version,
 });
+
+// ============================================================================
+// Tool: switch_workspace
+// ============================================================================
+server.tool(
+  "switch_workspace",
+  "Switch the active workspace to a new project directory",
+  {
+    path: z.string().describe("Absolute path to the new project root directory"),
+  },
+  async ({ path: inputPath }) => {
+    try {
+      const absPath = path.resolve(inputPath);
+      if (!fs.existsSync(absPath) || !fs.statSync(absPath).isDirectory()) {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ error: "Invalid Path", message: `'${inputPath}' is not a directory.` }) }],
+        };
+      }
+
+      // Clear all connections
+      clearAllConnections();
+
+      // Set new active workspace
+      const newWorkspace = setActiveWorkspace(absPath);
+
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            success: true,
+            message: `Switched active workspace to: ${newWorkspace}`,
+            workspace: newWorkspace,
+            info: "All previous Vue language server connections have been closed.",
+          }),
+        }],
+      };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: JSON.stringify({ error: String(error) }) }],
+      };
+    }
+  }
+);
 
 // ============================================================================
 // Tool: hover
@@ -267,6 +333,11 @@ server.tool(
   },
   async ({ path: inputPath }) => {
     try {
+      const error = validateFileWorkspace(inputPath);
+      if (error) {
+        return { content: [{ type: "text", text: error }] };
+      }
+
       const absPath = path.resolve(inputPath);
       const stats = fs.statSync(absPath);
 
@@ -329,6 +400,11 @@ server.tool(
   },
   async ({ file, content }) => {
     try {
+      const error = validateFileWorkspace(file);
+      if (error) {
+        return { content: [{ type: "text", text: error }] };
+      }
+
       await updateDocument(file, content);
       return {
         content: [{
@@ -356,6 +432,11 @@ server.tool(
   },
   async ({ file, query }) => {
     try {
+      const error = validateFileWorkspace(file);
+      if (error) {
+        return { content: [{ type: "text", text: error }] };
+      }
+
       const tree = await getDocumentSymbols(file);
       if (!tree) {
         return {
@@ -441,6 +522,11 @@ server.tool(
   },
   async ({ file, line, column, newName }) => {
     try {
+      const error = validateFileWorkspace(file);
+      if (error) {
+        return { content: [{ type: "text", text: error }] };
+      }
+
       const locations = await getRenameLocations(file, line, column);
       if (!locations || locations.length === 0) {
         return {
@@ -496,6 +582,13 @@ server.tool(
   },
   async ({ pattern, path: searchPath, glob, caseSensitive, maxResults }) => {
     try {
+      if (searchPath) {
+        const error = validateFileWorkspace(searchPath);
+        if (error) {
+          return { content: [{ type: "text", text: error }] };
+        }
+      }
+
       const { execSync } = await import("child_process");
 
       const args = ["rg", "--json", "-n"];
@@ -571,6 +664,11 @@ server.tool(
   },
   async ({ file }) => {
     try {
+      const error = validateFileWorkspace(file);
+      if (error) {
+        return { content: [{ type: "text", text: error }] };
+      }
+
       const status = await getProjectStatus(file);
       return {
         content: [{

@@ -45,6 +45,8 @@ const backendManager = new BackendManager(config);
 
 // Track which backends have been started (to avoid duplicate tool registration)
 const startedBackends = new Set<Language>();
+// Track registered tool names to avoid duplicate registration
+const registeredTools = new Set<string>();
 
 // Create MCP server
 const server = new McpServer({
@@ -76,47 +78,7 @@ function jsonSchemaToZod(schema: any): Record<string, z.ZodTypeAny> {
   const required = new Set(schema.required || []);
 
   for (const [key, prop] of Object.entries<any>(schema.properties)) {
-    let zodType: z.ZodTypeAny;
-
-    switch (prop.type) {
-      case "string":
-        zodType = z.string();
-        if (prop.enum) {
-          zodType = z.enum(prop.enum as [string, ...string[]]);
-        }
-        break;
-      case "number":
-      case "integer":
-        zodType = z.number();
-        if (prop.type === "integer") {
-          zodType = (zodType as z.ZodNumber).int();
-        }
-        if (prop.exclusiveMinimum !== undefined) {
-          zodType = (zodType as z.ZodNumber).gt(prop.exclusiveMinimum);
-        }
-        if (prop.minimum !== undefined) {
-          zodType = (zodType as z.ZodNumber).gte(prop.minimum);
-        }
-        if (prop.maximum !== undefined) {
-          zodType = (zodType as z.ZodNumber).lte(prop.maximum);
-        }
-        break;
-      case "boolean":
-        zodType = z.boolean();
-        break;
-      case "array":
-        if (prop.items?.type === "string") {
-          zodType = z.array(z.string());
-        } else {
-          zodType = z.array(z.any());
-        }
-        break;
-      case "object":
-        zodType = z.record(z.any());
-        break;
-      default:
-        zodType = z.any();
-    }
+    let zodType: z.ZodTypeAny = schemaToZod(prop);
 
     // Add description
     if (prop.description) {
@@ -139,6 +101,88 @@ function jsonSchemaToZod(schema: any): Record<string, z.ZodTypeAny> {
   return result;
 }
 
+function schemaToZod(schema: any): z.ZodTypeAny {
+  if (!schema) return z.any();
+
+  if (schema.oneOf || schema.anyOf) {
+    const variants = (schema.oneOf ?? schema.anyOf) as any[];
+    const mapped = variants.map((variant) => schemaToZod(variant));
+    if (mapped.length === 1) return mapped[0];
+    if (mapped.length > 1) return z.union(mapped as [z.ZodTypeAny, z.ZodTypeAny, ...z.ZodTypeAny[]]);
+    return z.any();
+  }
+
+  if (schema.allOf) {
+    const variants = schema.allOf as any[];
+    if (variants.length === 0) return z.any();
+    return variants.map((variant) => schemaToZod(variant)).reduce((acc, next) => z.intersection(acc, next));
+  }
+
+  if (schema.enum && schema.type === "string") {
+    return z.enum(schema.enum as [string, ...string[]]);
+  }
+
+  switch (schema.type) {
+    case "string": {
+      let zodType: z.ZodTypeAny = z.string();
+      if (schema.minLength !== undefined) zodType = (zodType as z.ZodString).min(schema.minLength);
+      if (schema.maxLength !== undefined) zodType = (zodType as z.ZodString).max(schema.maxLength);
+      if (schema.pattern) {
+        try {
+          zodType = (zodType as z.ZodString).regex(new RegExp(schema.pattern));
+        } catch {
+          // Ignore invalid regex patterns.
+        }
+      }
+      return zodType;
+    }
+    case "number":
+    case "integer": {
+      let zodType: z.ZodTypeAny = z.number();
+      if (schema.type === "integer") {
+        zodType = (zodType as z.ZodNumber).int();
+      }
+      if (schema.exclusiveMinimum !== undefined) {
+        zodType = (zodType as z.ZodNumber).gt(schema.exclusiveMinimum);
+      }
+      if (schema.minimum !== undefined) {
+        zodType = (zodType as z.ZodNumber).gte(schema.minimum);
+      }
+      if (schema.maximum !== undefined) {
+        zodType = (zodType as z.ZodNumber).lte(schema.maximum);
+      }
+      return zodType;
+    }
+    case "boolean":
+      return z.boolean();
+    case "array":
+      return z.array(schemaToZod(schema.items ?? {}));
+    case "object": {
+      if (schema.properties) {
+        const shape: Record<string, z.ZodTypeAny> = {};
+        const required = new Set(schema.required || []);
+        for (const [key, prop] of Object.entries<any>(schema.properties)) {
+          let propSchema = schemaToZod(prop);
+          if (prop.description) {
+            propSchema = propSchema.describe(prop.description);
+          }
+          if (prop.default !== undefined) {
+            propSchema = propSchema.default(prop.default);
+          }
+          if (!required.has(key)) {
+            propSchema = propSchema.optional();
+          }
+          shape[key] = propSchema;
+        }
+        return z.object(shape).passthrough();
+      }
+      return z.record(z.any());
+    }
+    default:
+      return z.any();
+  }
+}
+
 /**
  * Register tools from a backend with namespace prefix.
  * Uses underscore separator for MCP compliance (e.g., python_hover instead of python/hover)
@@ -147,6 +191,9 @@ function registerBackendTools(language: Language, tools: Tool[]): number {
   let count = 0;
   for (const tool of tools) {
     const namespacedName = `${language}_${tool.name}`;
+    if (registeredTools.has(namespacedName)) {
+      continue;
+    }
 
     // Convert JSON Schema to Zod schema
     const zodSchema = jsonSchemaToZod(tool.inputSchema);
@@ -161,6 +208,7 @@ function registerBackendTools(language: Language, tools: Tool[]): number {
     );
 
     console.error(`[lsp-mcp] Registered ${namespacedName}`);
+    registeredTools.add(namespacedName);
     count++;
   }
 
@@ -188,7 +236,7 @@ async function startAndRegisterBackend(language: Language): Promise<number> {
     const tools = await backendManager.getTools(language);
     const count = registerBackendTools(language, tools);
     startedBackends.add(language);
-    console.error(`[lsp-mcp] ${language}: ${count} tools registered`);
+    console.error(`[lsp-mcp] ${language}: ${count} new tools registered`);
     return count;
   } catch (error) {
     console.error(`[lsp-mcp] Failed to start ${language} backend:`, error);
@@ -206,17 +254,12 @@ async function updateAndRestartBackend(language: Language): Promise<{ oldVersion
   // Restart the backend to get the latest version
   const result = await backendManager.restartBackend(language);
 
-  // If this backend was previously started, re-register its tools
-  // (tools are already registered in the server, they will route to the new backend)
-  if (startedBackends.has(language)) {
-    console.error(`[lsp-mcp] ${language} backend updated, tools still available`);
-  } else {
-    // If not started before, now mark it as started and register tools
-    const tools = await backendManager.getTools(language);
-    registerBackendTools(language, tools);
-    startedBackends.add(language);
-    console.error(`[lsp-mcp] ${language} backend updated and ${tools.length} tools registered`);
-  }
+  const tools = await backendManager.getTools(language);
+  const newlyRegistered = registerBackendTools(language, tools);
+  startedBackends.add(language);
+  console.error(
+    `[lsp-mcp] ${language} backend updated (${newlyRegistered} new tools registered)`
+  );
 
   return result;
 }
@@ -261,7 +304,7 @@ server.registerTool(
     inputSchema: startBackendSchema,
   },
   async ({ language }) => startBackendTool(
-    language as "python" | "typescript",
+    language as "python" | "typescript" | "vue",
     backendManager,
     config,
     startAndRegisterBackend
@@ -275,7 +318,7 @@ server.registerTool(
     inputSchema: updateBackendSchema,
   },
   async ({ language }) => updateBackendTool(
-    language as "python" | "typescript",
+    language as "python" | "typescript" | "vue",
     backendManager,
     config,
     updateAndRestartBackend
@@ -297,6 +340,7 @@ const KNOWN_TOOLS: Record<Language, Array<{
   schema: Record<string, z.ZodTypeAny>;
 }>> = {
   python: [
+    { name: "switch_workspace", description: "Switch the active workspace to a new project directory", schema: { path: z.string() } },
     { name: "hover", description: "Get documentation for the symbol at the given position", schema: { file: z.string(), line: z.number().int(), column: z.number().int() } },
     { name: "definition", description: "Get the definition location for the symbol at the given position", schema: { file: z.string(), line: z.number().int(), column: z.number().int() } },
     { name: "references", description: "Find all references to the symbol at the given position", schema: { file: z.string(), line: z.number().int(), column: z.number().int() } },
@@ -310,6 +354,7 @@ const KNOWN_TOOLS: Record<Language, Array<{
     { name: "status", description: "Get the status of the Python MCP server", schema: {} },
   ],
   typescript: [
+    { name: "switch_workspace", description: "Switch the active workspace to a new project directory", schema: { path: z.string() } },
     { name: "hover", description: "Get type information and documentation at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
     { name: "definition", description: "Go to definition of a symbol at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
     { name: "references", description: "Find all references to a symbol at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
@@ -327,6 +372,7 @@ const KNOWN_TOOLS: Record<Language, Array<{
     { name: "apply_refactor", description: "Apply a specific refactoring action at a position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive(), refactorName: z.string(), actionName: z.string(), preview: z.boolean().default(false).optional() } },
   ],
   vue: [
+    { name: "switch_workspace", description: "Switch the active workspace to a new project directory", schema: { path: z.string() } },
     { name: "hover", description: "Get type information and documentation at a specific position in a Vue SFC file", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
     { name: "definition", description: "Go to definition of a symbol at a specific position in a Vue SFC file", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
     { name: "references", description: "Find all references to a symbol at a specific position in a Vue SFC file", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
@@ -340,6 +386,55 @@ const KNOWN_TOOLS: Record<Language, Array<{
     { name: "status", description: "Check Vue Language Server status for a project", schema: { file: z.string() } },
   ],
 };
+
+// ============================================================================
+// Global Workspace Tool
+// ============================================================================
+
+server.registerTool(
+  "switch_workspace",
+  {
+    description: "Switch the active workspace for ALL backends simultaneously. This clears caches and refocuses code intelligence on the new project root.",
+    inputSchema: {
+      path: z.string().describe("Absolute path to the new project root directory"),
+    },
+  },
+  async ({ path: workspacePath }) => {
+    const results: Record<string, any> = {};
+    const languages: Language[] = [];
+    if (config.python.enabled) languages.push("python");
+    if (config.typescript.enabled) languages.push("typescript");
+    if (config.vue.enabled) languages.push("vue");
+
+    await Promise.all(
+      languages.map(async (lang) => {
+        try {
+          // Only call if backend is already started
+          if (startedBackends.has(lang)) {
+            const result = await backendManager.callTool(lang, "switch_workspace", { path: workspacePath });
+            results[lang] = JSON.parse(result.content[0].text);
+          } else {
+            results[lang] = { status: "not_started", message: "Workspace will be set when backend starts" };
+          }
+        } catch (error) {
+          results[lang] = { error: String(error) };
+        }
+      })
+    );
+
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          success: true,
+          workspace: workspacePath,
+          results,
+        }, null, 2),
+      }],
+    };
+  }
+);
+
 
 /**
  * Pre-register all known tools for enabled backends.
@@ -386,6 +481,7 @@ function preRegisterKnownTools(): void {
         }
       );
 
+      registeredTools.add(namespacedName);
       totalCount++;
     }
 

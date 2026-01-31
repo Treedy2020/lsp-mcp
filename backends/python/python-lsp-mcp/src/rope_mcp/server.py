@@ -22,9 +22,12 @@ from .config import (
     SHARED_TOOLS,
     set_python_path as config_set_python_path,
     get_python_path_status,
+    set_active_workspace,
+    get_active_workspace,
+    validate_file_workspace,
 )
 from .rope_client import get_client as get_rope_client
-from .lsp import get_lsp_client, close_all_clients
+from .lsp import get_lsp_client, close_all_clients, close_all_clients as close_lsp_clients
 from .tools import (
     do_rename,
     do_move,
@@ -40,14 +43,59 @@ from .tools import (
 )
 
 # Create the MCP server
-mcp = FastMCP("python-lsp-mcp", version=__version__)
+mcp = FastMCP("python-lsp-mcp")
 
 # Register cleanup on exit
 atexit.register(close_all_clients)
 
 
+@mcp.tool()
+def switch_workspace(path: str) -> str:
+    """Switch the active workspace to a new project directory.
+
+    This will:
+    1. Set the new active workspace path.
+    2. Close all existing language server instances to save resources.
+    3. The next tool call will start a new language server for the new workspace.
+
+    Args:
+        path: Absolute path to the new project root directory.
+
+    Returns:
+        JSON string with confirmation of the switch.
+    """
+    abs_path = os.path.abspath(path)
+    if not os.path.isdir(abs_path):
+        return json.dumps(
+            {"error": "Invalid Path", "message": f"'{path}' is not a directory."},
+            indent=2,
+        )
+
+    # Close all existing clients (LSP and Rope)
+    close_lsp_clients()
+    get_rope_client().close_all()
+
+    # Set new active workspace
+    new_workspace = set_active_workspace(abs_path)
+
+    return json.dumps(
+        {
+            "success": True,
+            "message": f"Switched active workspace to: {new_workspace}",
+            "workspace": new_workspace,
+            "info": "All previous language server instances have been closed.",
+        },
+        indent=2,
+    )
+
+
 def _find_workspace(file_path: str) -> str:
     """Find workspace root for a file."""
+    # If we have an active workspace, always use it
+    active = get_active_workspace()
+    if active:
+        return active
+
     client = get_rope_client()
     return client.find_workspace_for_file(file_path)
 
@@ -80,6 +128,11 @@ def hover(
     Returns:
         JSON string with documentation or error message
     """
+    # Guard: check workspace
+    error = validate_file_workspace(file)
+    if error:
+        return json.dumps(error, indent=2)
+
     effective_backend = _get_effective_backend("hover", backend)
 
     if effective_backend == Backend.PYRIGHT:
@@ -122,6 +175,11 @@ def definition(
     Returns:
         JSON string with definition location or error message
     """
+    # Guard: check workspace
+    error = validate_file_workspace(file)
+    if error:
+        return json.dumps(error, indent=2)
+
     effective_backend = _get_effective_backend("definition", backend)
 
     if effective_backend == Backend.PYRIGHT:
@@ -163,6 +221,11 @@ def references(
     Returns:
         JSON string with list of references or error message
     """
+    # Guard: check workspace
+    error = validate_file_workspace(file)
+    if error:
+        return json.dumps(error, indent=2)
+
     effective_backend = _get_effective_backend("references", backend)
 
     if effective_backend == Backend.PYRIGHT:
@@ -199,6 +262,11 @@ def completions(
     Returns:
         JSON string with completion items or error message
     """
+    # Guard: check workspace
+    error = validate_file_workspace(file)
+    if error:
+        return json.dumps(error, indent=2)
+
     effective_backend = _get_effective_backend("completions", backend)
 
     if effective_backend == Backend.PYRIGHT:
@@ -234,6 +302,11 @@ def symbols(
     Returns:
         JSON string with list of symbols or error message
     """
+    # Guard: check workspace
+    error = validate_file_workspace(file)
+    if error:
+        return json.dumps(error, indent=2)
+
     effective_backend = _get_effective_backend("symbols", backend)
 
     if effective_backend == Backend.PYRIGHT:
@@ -278,6 +351,11 @@ def rename(file: str, line: int, column: int, new_name: str) -> str:
     Returns:
         JSON string with changes made or error message
     """
+    # Guard: check workspace
+    error = validate_file_workspace(file)
+    if error:
+        return json.dumps(error, indent=2)
+
     result = do_rename(file, line, column, new_name)
     result["backend"] = "rope"
     return json.dumps(result, indent=2)
@@ -306,6 +384,11 @@ def move(
     Returns:
         JSON string with changes made or error message
     """
+    # Guard: check workspace
+    error = validate_file_workspace(file)
+    if error:
+        return json.dumps(error, indent=2)
+
     result = do_move(file, line, column, destination, resources_only=preview)
     result["backend"] = "rope"
     return json.dumps(result, indent=2)
@@ -352,6 +435,11 @@ def change_signature(
         # Remove param: def foo(a, b) -> def foo(a)
         change_signature(file, line, col, remove_param="b")
     """
+    # Guard: check workspace
+    error = validate_file_workspace(file)
+    if error:
+        return json.dumps(error, indent=2)
+
     # Build add_param dict if specified
     add_param_dict = None
     if add_param:
@@ -388,6 +476,11 @@ def function_signature(file: str, line: int, column: int) -> str:
     Returns:
         JSON string with function signature info
     """
+    # Guard: check workspace
+    error = validate_file_workspace(file)
+    if error:
+        return json.dumps(error, indent=2)
+
     result = get_function_signature(file, line, column)
     result["backend"] = "rope"
     return json.dumps(result, indent=2)
@@ -405,6 +498,11 @@ def diagnostics(path: str) -> str:
     Returns:
         JSON string with diagnostics or error message
     """
+    # Guard: check workspace
+    error = validate_file_workspace(path)
+    if error:
+        return json.dumps(error, indent=2)
+
     result = get_diagnostics(path)
     result["backend"] = "pyright"
     return json.dumps(result, indent=2)
@@ -424,6 +522,11 @@ def signature_help(file: str, line: int, column: int) -> str:
     Returns:
         JSON string with signature help or error message
     """
+    # Guard: check workspace
+    error = validate_file_workspace(file)
+    if error:
+        return json.dumps(error, indent=2)
+
     try:
         workspace = _find_workspace(file)
         client = get_lsp_client(workspace)
@@ -452,6 +555,11 @@ def update_document(file: str, content: str) -> str:
     Returns:
         JSON string with confirmation
     """
+    # Guard: check workspace
+    error = validate_file_workspace(file)
+    if error:
+        return json.dumps(error, indent=2)
+
     try:
         workspace = _find_workspace(file)
         client = get_lsp_client(workspace)
@@ -461,6 +569,7 @@ def update_document(file: str, content: str) -> str:
         )
     except Exception as e:
         return json.dumps({"error": str(e), "backend": "pyright"}, indent=2)
+
 
 
 @mcp.tool()
@@ -483,6 +592,12 @@ def search(
     Returns:
         JSON string with search results or error message
     """
+    # Guard: check workspace if path is provided
+    if path:
+        error = validate_file_workspace(path)
+        if error:
+            return json.dumps(error, indent=2)
+
     result = get_search(
         pattern=pattern,
         path=path,

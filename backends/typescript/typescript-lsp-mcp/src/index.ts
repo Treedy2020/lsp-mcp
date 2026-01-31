@@ -33,6 +33,9 @@ import {
   getFunctionSignature,
   applyFileChanges,
   getProjectConfig,
+  setActiveWorkspace,
+  validateFileWorkspace,
+  clearAllCaches,
 } from "./ts-service.js";
 
 // Read version from package.json
@@ -44,6 +47,49 @@ const server = new McpServer({
   name: "typescript-lsp-mcp",
   version: packageJson.version,
 });
+
+// ============================================================================
+// Tool: switch_workspace
+// ============================================================================
+server.tool(
+  "switch_workspace",
+  "Switch the active workspace to a new project directory",
+  {
+    path: z.string().describe("Absolute path to the new project root directory"),
+  },
+  async ({ path: inputPath }) => {
+    try {
+      const absPath = path.resolve(inputPath);
+      if (!fs.existsSync(absPath) || !fs.statSync(absPath).isDirectory()) {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ error: "Invalid Path", message: `'${inputPath}' is not a directory.` }) }],
+        };
+      }
+
+      // Clear all caches
+      clearAllCaches();
+
+      // Set new active workspace
+      const newWorkspace = setActiveWorkspace(absPath);
+
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            success: true,
+            message: `Switched active workspace to: ${newWorkspace}`,
+            workspace: newWorkspace,
+            info: "All previous TypeScript caches have been cleared.",
+          }),
+        }],
+      };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: JSON.stringify({ error: String(error) }) }],
+      };
+    }
+  }
+);
 
 // ============================================================================
 // Tool: hover
@@ -58,6 +104,11 @@ server.tool(
   },
   async ({ file, line, column }) => {
     try {
+      const error = validateFileWorkspace(file);
+      if (error) {
+        return { content: [{ type: "text", text: error }] };
+      }
+
       const info = getQuickInfo(file, line, column);
       if (!info) {
         return {
@@ -104,6 +155,11 @@ server.tool(
   },
   async ({ file, line, column }) => {
     try {
+      const error = validateFileWorkspace(file);
+      if (error) {
+        return { content: [{ type: "text", text: error }] };
+      }
+
       const definitions = getDefinition(file, line, column);
       if (!definitions || definitions.length === 0) {
         return {
@@ -154,6 +210,11 @@ server.tool(
   },
   async ({ file, line, column }) => {
     try {
+      const error = validateFileWorkspace(file);
+      if (error) {
+        return { content: [{ type: "text", text: error }] };
+      }
+
       const refs = getReferences(file, line, column);
       if (!refs || refs.length === 0) {
         return {
@@ -200,6 +261,11 @@ server.tool(
   },
   async ({ file, line, column, limit }) => {
     try {
+      const error = validateFileWorkspace(file);
+      if (error) {
+        return { content: [{ type: "text", text: error }] };
+      }
+
       const completions = getCompletions(file, line, column);
       if (!completions) {
         return {
@@ -246,6 +312,11 @@ server.tool(
   },
   async ({ file, line, column }) => {
     try {
+      const error = validateFileWorkspace(file);
+      if (error) {
+        return { content: [{ type: "text", text: error }] };
+      }
+
       const help = getSignatureHelp(file, line, column);
       if (!help) {
         return {
@@ -295,6 +366,11 @@ server.tool(
   },
   async ({ file, query }) => {
     try {
+      const error = validateFileWorkspace(file);
+      if (error) {
+        return { content: [{ type: "text", text: error }] };
+      }
+
       const tree = getDocumentSymbols(file);
 
       const symbols: Array<{
@@ -374,6 +450,11 @@ server.tool(
   },
   async ({ path: inputPath }) => {
     try {
+      const error = validateFileWorkspace(inputPath);
+      if (error) {
+        return { content: [{ type: "text", text: error }] };
+      }
+
       const absPath = path.resolve(inputPath);
       const stats = fs.statSync(absPath);
 
@@ -438,6 +519,11 @@ server.tool(
   },
   async ({ file, line, column, newName }) => {
     try {
+      const error = validateFileWorkspace(file);
+      if (error) {
+        return { content: [{ type: "text", text: error }] };
+      }
+
       const locations = getRenameLocations(file, line, column);
       if (!locations || locations.length === 0) {
         return {
@@ -494,6 +580,11 @@ server.tool(
   },
   async ({ file, content }) => {
     try {
+      const error = validateFileWorkspace(file);
+      if (error) {
+        return { content: [{ type: "text", text: error }] };
+      }
+
       updateDocument(file, content);
       return {
         content: [{
@@ -520,6 +611,11 @@ server.tool(
   },
   async ({ file }) => {
     try {
+      const error = validateFileWorkspace(file);
+      if (error) {
+        return { content: [{ type: "text", text: error }] };
+      }
+
       const absPath = path.resolve(file);
       const projectRoot = findProjectRoot(absPath);
       const configPath = path.join(projectRoot, "tsconfig.json");
@@ -639,6 +735,13 @@ server.tool(
   },
   async ({ pattern, path: searchPath, glob, caseSensitive, maxResults }) => {
     try {
+      if (searchPath) {
+        const error = validateFileWorkspace(searchPath);
+        if (error) {
+          return { content: [{ type: "text", text: error }] };
+        }
+      }
+
       const { execSync } = await import("child_process");
 
       const args = ["rg", "--json", "-n"];
@@ -713,6 +816,11 @@ server.tool(
   },
   async ({ file, line, column, destination, preview }) => {
     try {
+      const error = validateFileWorkspace(file);
+      if (error) {
+        return { content: [{ type: "text", text: error }] };
+      }
+
       // Get available refactorings
       const refactors = getApplicableRefactors(file, line, column);
 
@@ -802,6 +910,11 @@ server.tool(
   },
   async ({ file, line, column }) => {
     try {
+      const error = validateFileWorkspace(file);
+      if (error) {
+        return { content: [{ type: "text", text: error }] };
+      }
+
       const signature = getFunctionSignature(file, line, column);
 
       if (!signature) {
@@ -837,6 +950,11 @@ server.tool(
   },
   async ({ file, line, column }) => {
     try {
+      const error = validateFileWorkspace(file);
+      if (error) {
+        return { content: [{ type: "text", text: error }] };
+      }
+
       const refactors = getApplicableRefactors(file, line, column);
 
       const result = refactors.map((r) => ({
@@ -878,6 +996,11 @@ server.tool(
   },
   async ({ file, line, column, refactorName, actionName, preview }) => {
     try {
+      const error = validateFileWorkspace(file);
+      if (error) {
+        return { content: [{ type: "text", text: error }] };
+      }
+
       const edits = getRefactorEdits(file, line, column, refactorName, actionName);
 
       if (!edits || !edits.edits.length) {

@@ -288,6 +288,70 @@ _python_paths: dict[str, str] = {}
 # Global Python path override
 _global_python_path: Optional[str] = None
 
+# Active workspace for single-project mode
+_active_workspace: Optional[str] = None
+
+
+def set_active_workspace(workspace: str) -> str:
+    """Set the active workspace.
+
+    Args:
+        workspace: Path to the workspace root
+
+    Returns:
+        The absolute path to the active workspace
+    """
+    global _active_workspace
+    _active_workspace = os.path.abspath(workspace)
+    return _active_workspace
+
+
+def get_active_workspace() -> Optional[str]:
+    """Get the currently active workspace."""
+    return _active_workspace
+
+
+def is_file_in_workspace(file_path: str) -> bool:
+    """Check if a file belongs to the active workspace.
+
+    Args:
+        file_path: Path to the file
+
+    Returns:
+        True if the file is within the active workspace, False otherwise.
+        Returns True if no active workspace is set (backward compatibility).
+    """
+    if not _active_workspace:
+        return True
+
+    abs_file = os.path.abspath(file_path)
+    return abs_file.startswith(_active_workspace)
+
+
+def validate_file_workspace(file_path: str) -> Optional[dict]:
+    """Validate that a file is within the active workspace.
+
+    Args:
+        file_path: Path to the file
+
+    Returns:
+        Error dict if file is outside workspace, None otherwise.
+    """
+    if not is_file_in_workspace(file_path):
+        return {
+            "error": "Context Mismatch",
+            "message": (
+                f"The file '{file_path}' is outside the active workspace '{_active_workspace}'.\n\n"
+                "Current Logic:\n"
+                "1. I only analyze files from the active project to ensure accuracy and save resources.\n"
+                "2. You must explicitly switch the workspace if you want to work on a different project.\n\n"
+                "Action Required:\n"
+                "Please call 'switch_workspace(path=\"...\")' with the new project root before retrying."
+            ),
+            "current_workspace": _active_workspace,
+        }
+    return None
+
 
 def set_python_path(python_path: str, workspace: Optional[str] = None) -> dict:
     """Set the Python interpreter path.

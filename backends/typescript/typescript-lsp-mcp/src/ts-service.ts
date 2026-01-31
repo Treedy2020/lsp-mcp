@@ -33,6 +33,59 @@ const configCache = new Map<string, {
   typescriptSource: "project" | "bundled";
 }>();
 
+// Active workspace for single-project mode
+let activeWorkspace: string | null = null;
+
+/**
+ * Set the active workspace.
+ */
+export function setActiveWorkspace(workspace: string): string {
+  activeWorkspace = path.resolve(workspace);
+  return activeWorkspace;
+}
+
+/**
+ * Get the active workspace.
+ */
+export function getActiveWorkspace(): string | null {
+  return activeWorkspace;
+}
+
+/**
+ * Check if a file is in the active workspace.
+ */
+export function isFileInWorkspace(filePath: string): boolean {
+  if (!activeWorkspace) return true;
+  const absPath = path.resolve(filePath);
+  return absPath.startsWith(activeWorkspace);
+}
+
+/**
+ * Validate that a file is within the active workspace.
+ */
+export function validateFileWorkspace(filePath: string): string | null {
+  if (!isFileInWorkspace(filePath)) {
+    return JSON.stringify({
+      error: "Context Mismatch",
+      message: `The file '${filePath}' is outside the active workspace '${activeWorkspace}'.\n\nCurrent Logic:\n1. I only analyze files from the active project to ensure accuracy and save resources.\n2. You must explicitly switch the workspace if you want to work on a different project.\n\nAction Required:\nPlease call 'switch_workspace(path=\"...\")' with the new project root before retrying.`,
+      currentWorkspace: activeWorkspace,
+    });
+  }
+  return null;
+}
+
+/**
+ * Clear all caches and services.
+ */
+export function clearAllCaches(): void {
+  serviceCache.clear();
+  documentVersions.clear();
+  documentContents.clear();
+  accessedFilesPerProject.clear();
+  tsModuleCache.clear();
+  configCache.clear();
+}
+
 /**
  * Get the TypeScript module to use for a project.
  * Prefers the project's local TypeScript installation.
