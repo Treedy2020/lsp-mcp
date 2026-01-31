@@ -18,7 +18,7 @@ import { z } from "zod";
 import { createRequire } from "module";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 
-import { loadConfig, type PythonProvider, type Language } from "./config.js";
+import { loadConfig, inferLanguageFromPath, type PythonProvider, type Language } from "./config.js";
 import { BackendManager } from "./backend-manager.js";
 import {
   status as statusTool,
@@ -47,6 +47,8 @@ const backendManager = new BackendManager(config);
 const startedBackends = new Set<Language>();
 // Track registered tool names to avoid duplicate registration
 const registeredTools = new Set<string>();
+// Global active workspace path
+let activeWorkspacePath: string | null = null;
 
 // Create MCP server
 const server = new McpServer({
@@ -54,15 +56,15 @@ const server = new McpServer({
   version: packageJson.version,
 });
 
-// ============================================================================
+// ============================================================================ 
 // Prompts (Skills)
-// ============================================================================
+// ============================================================================ 
 
 registerPrompts(server);
 
-// ============================================================================
-// Dynamic Tool Registration
-// ============================================================================
+// ============================================================================ 
+// Dynamic Tool Registration Helpers
+// ============================================================================ 
 
 /**
  * Convert a backend tool schema to Zod schema for MCP registration.
@@ -184,41 +186,6 @@ function schemaToZod(schema: any): z.ZodTypeAny {
 }
 
 /**
- * Register tools from a backend with namespace prefix.
- * Uses underscore separator for MCP compliance (e.g., python_hover instead of python/hover)
- */
-function registerBackendTools(language: Language, tools: Tool[]): number {
-  let count = 0;
-  for (const tool of tools) {
-    const namespacedName = `${language}_${tool.name}`;
-    if (registeredTools.has(namespacedName)) {
-      continue;
-    }
-
-    // Convert JSON Schema to Zod schema
-    const zodSchema = jsonSchemaToZod(tool.inputSchema);
-
-    server.registerTool(
-      namespacedName,
-      {
-        description: tool.description || `${language} ${tool.name} tool`,
-        inputSchema: zodSchema,
-      },
-      async (args) => backendManager.callTool(language, tool.name, args as Record<string, unknown>)
-    );
-
-    console.error(`[lsp-mcp] Registered ${namespacedName}`);
-    registeredTools.add(namespacedName);
-    count++;
-  }
-
-  // Notify client that tools have changed
-  server.sendToolListChanged();
-
-  return count;
-}
-
-/**
  * Start a backend and register its tools.
  * Returns the number of tools registered.
  */
@@ -226,18 +193,18 @@ async function startAndRegisterBackend(language: Language): Promise<number> {
   // Check if already started
   if (startedBackends.has(language)) {
     const status = backendManager.getStatus()[language];
-    console.error(`[lsp-mcp] ${language} backend already started (${status?.tools} tools)`);
+    console.error(`[lsp-mcp] ${language} backend already started (${status?.tools} tools)`)
     return status?.tools || 0;
   }
 
   console.error(`[lsp-mcp] Starting ${language} backend...`);
 
   try {
-    const tools = await backendManager.getTools(language);
-    const count = registerBackendTools(language, tools);
+    // Just start the backend, tools are already registered via unified routing
+    await backendManager.getBackend(language);
     startedBackends.add(language);
-    console.error(`[lsp-mcp] ${language}: ${count} new tools registered`);
-    return count;
+    console.error(`[lsp-mcp] ${language} backend started`);
+    return 0; // We don't register new tools dynamically anymore
   } catch (error) {
     console.error(`[lsp-mcp] Failed to start ${language} backend:`, error);
     throw error;
@@ -253,20 +220,14 @@ async function updateAndRestartBackend(language: Language): Promise<{ oldVersion
 
   // Restart the backend to get the latest version
   const result = await backendManager.restartBackend(language);
-
-  const tools = await backendManager.getTools(language);
-  const newlyRegistered = registerBackendTools(language, tools);
   startedBackends.add(language);
-  console.error(
-    `[lsp-mcp] ${language} backend updated (${newlyRegistered} new tools registered)`
-  );
-
+  
   return result;
 }
 
-// ============================================================================
+// ============================================================================ 
 // Meta Tools
-// ============================================================================
+// ============================================================================ 
 
 server.registerTool(
   "status",
@@ -278,6 +239,18 @@ server.registerTool(
   "check_versions",
   { description: "Check versions of all backends and server. Shows installed versions and how to check for updates." },
   async () => checkVersionsTool(backendManager, config)
+);
+
+server.registerTool(
+  "reload_config",
+  { description: "Reload configuration from environment variables. Useful for changing settings without restarting the server." },
+  async () => {
+    const newConfig = loadConfig();
+    backendManager.updateConfig(newConfig);
+    return {
+      content: [{ type: "text", text: JSON.stringify({ success: true, message: "Configuration reloaded", config: newConfig }) }],
+    };
+  }
 );
 
 server.registerTool(
@@ -325,71 +298,57 @@ server.registerTool(
   )
 );
 
-// ============================================================================
-// Pre-registered Tools (for on-demand loading)
-// ============================================================================
+// ============================================================================ 
+// Unified Tool Routing
+// ============================================================================ 
 
 /**
- * Known tools for each backend with their schemas.
- * These are pre-registered so they appear in ToolSearch,
- * but the backend is only started when the tool is first called.
+ * Standard LSP tools that are unified across all languages.
+ * Routing is done automatically based on the 'file' or 'path' argument.
  */
-const KNOWN_TOOLS: Record<Language, Array<{
+const UNIFIED_TOOLS: Array<{ 
+  name: string;
+  description: string;
+  schema: Record<string, z.ZodTypeAny>;
+}> = [
+  { name: "hover", description: "Get type information and documentation at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
+  { name: "definition", description: "Go to definition of a symbol at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
+  { name: "references", description: "Find all references to a symbol at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
+  { name: "completions", description: "Get code completion suggestions at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive(), limit: z.number().int().positive().default(20).optional() } },
+  { name: "signature_help", description: "Get function signature help at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
+  { name: "symbols", description: "Extract symbols (classes, functions, methods, variables) from a file", schema: { file: z.string(), query: z.string().optional() } },
+  { name: "diagnostics", description: "Get type errors and warnings for a file or directory", schema: { path: z.string() } },
+  { name: "rename", description: "Preview renaming a symbol at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive(), newName: z.string() } },
+  { name: "update_document", description: "Update file content for incremental analysis without writing to disk", schema: { file: z.string(), content: z.string() } },
+  { name: "search", description: "Search for a pattern in files using ripgrep. Uses active workspace if path is omitted.", schema: { pattern: z.string(), path: z.string().optional(), glob: z.string().optional() } },
+];
+
+/**
+ * Language-specific tools that are not part of the unified set.
+ * These will be registered with a prefix (e.g., python_move).
+ */
+const LANGUAGE_SPECIFIC_TOOLS: Record<Language, Array<{ 
   name: string;
   description: string;
   schema: Record<string, z.ZodTypeAny>;
 }>> = {
   python: [
-    { name: "switch_workspace", description: "Switch the active workspace to a new project directory", schema: { path: z.string() } },
-    { name: "hover", description: "Get documentation for the symbol at the given position", schema: { file: z.string(), line: z.number().int(), column: z.number().int() } },
-    { name: "definition", description: "Get the definition location for the symbol at the given position", schema: { file: z.string(), line: z.number().int(), column: z.number().int() } },
-    { name: "references", description: "Find all references to the symbol at the given position", schema: { file: z.string(), line: z.number().int(), column: z.number().int() } },
-    { name: "completions", description: "Get code completion suggestions at the given position", schema: { file: z.string(), line: z.number().int(), column: z.number().int() } },
-    { name: "symbols", description: "Get symbols from a Python file", schema: { file: z.string(), query: z.string().optional() } },
-    { name: "diagnostics", description: "Get type errors and warnings for a Python file or directory", schema: { path: z.string() } },
-    { name: "rename", description: "Rename the symbol at the given position", schema: { file: z.string(), line: z.number().int(), column: z.number().int(), new_name: z.string() } },
-    { name: "signature_help", description: "Get function signature information at the given position", schema: { file: z.string(), line: z.number().int(), column: z.number().int() } },
-    { name: "update_document", description: "Update file content for incremental analysis without writing to disk", schema: { file: z.string(), content: z.string() } },
-    { name: "search", description: "Search for a regex pattern in files using ripgrep", schema: { pattern: z.string(), path: z.string().optional(), glob: z.string().optional() } },
-    { name: "status", description: "Get the status of the Python MCP server", schema: {} },
+    { name: "move", description: "Move a function or class to another module", schema: { file: z.string(), line: z.number().int(), column: z.number().int(), destination: z.string() } },
+    { name: "change_signature", description: "Change the signature of a function", schema: { file: z.string(), line: z.number().int(), column: z.number().int(), new_params: z.array(z.string()).optional() } },
+    { name: "function_signature", description: "Get current signature of a function", schema: { file: z.string(), line: z.number().int(), column: z.number().int() } },
   ],
   typescript: [
-    { name: "switch_workspace", description: "Switch the active workspace to a new project directory", schema: { path: z.string() } },
-    { name: "hover", description: "Get type information and documentation at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
-    { name: "definition", description: "Go to definition of a symbol at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
-    { name: "references", description: "Find all references to a symbol at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
-    { name: "completions", description: "Get code completion suggestions at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive(), limit: z.number().int().positive().default(20).optional() } },
-    { name: "signature_help", description: "Get function signature help at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
-    { name: "symbols", description: "Extract symbols (classes, functions, methods, variables) from a file", schema: { file: z.string(), query: z.string().optional() } },
-    { name: "diagnostics", description: "Get type errors and warnings for a TypeScript/JavaScript file", schema: { path: z.string() } },
-    { name: "rename", description: "Preview renaming a symbol at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive(), newName: z.string() } },
-    { name: "update_document", description: "Update file content for incremental analysis without writing to disk", schema: { file: z.string(), content: z.string() } },
-    { name: "status", description: "Check TypeScript environment status for a project", schema: { file: z.string() } },
-    { name: "search", description: "Search for a pattern in files using ripgrep", schema: { pattern: z.string(), path: z.string().optional(), glob: z.string().optional() } },
     { name: "move", description: "Move a function, class, or variable to a new file", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive(), destination: z.string().optional(), preview: z.boolean().default(false).optional() } },
-    { name: "function_signature", description: "Get the current signature of a function at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
-    { name: "available_refactors", description: "Get available refactoring actions at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
-    { name: "apply_refactor", description: "Apply a specific refactoring action at a position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive(), refactorName: z.string(), actionName: z.string(), preview: z.boolean().default(false).optional() } },
+    { name: "function_signature", description: "Get current signature of a function", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
+    { name: "available_refactors", description: "Get available refactoring actions", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
+    { name: "apply_refactor", description: "Apply a specific refactoring action", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive(), refactorName: z.string(), actionName: z.string(), preview: z.boolean().default(false).optional() } },
   ],
-  vue: [
-    { name: "switch_workspace", description: "Switch the active workspace to a new project directory", schema: { path: z.string() } },
-    { name: "hover", description: "Get type information and documentation at a specific position in a Vue SFC file", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
-    { name: "definition", description: "Go to definition of a symbol at a specific position in a Vue SFC file", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
-    { name: "references", description: "Find all references to a symbol at a specific position in a Vue SFC file", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
-    { name: "completions", description: "Get code completion suggestions at a specific position in a Vue SFC file", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive(), limit: z.number().int().positive().default(20).optional() } },
-    { name: "signature_help", description: "Get function signature help at a specific position in a Vue SFC file", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
-    { name: "diagnostics", description: "Get type errors and warnings for Vue SFC files", schema: { path: z.string() } },
-    { name: "update_document", description: "Update Vue file content for incremental analysis without writing to disk", schema: { file: z.string(), content: z.string() } },
-    { name: "symbols", description: "Extract symbols (variables, functions, components) from a Vue SFC file", schema: { file: z.string(), query: z.string().optional() } },
-    { name: "rename", description: "Preview renaming a symbol at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive(), newName: z.string() } },
-    { name: "search", description: "Search for a pattern in Vue files using ripgrep", schema: { pattern: z.string(), path: z.string().optional(), glob: z.string().optional() } },
-    { name: "status", description: "Check Vue Language Server status for a project", schema: { file: z.string() } },
-  ],
+  vue: [],
 };
 
-// ============================================================================
+// ============================================================================ 
 // Global Workspace Tool
-// ============================================================================
+// ============================================================================ 
 
 server.registerTool(
   "switch_workspace",
@@ -400,6 +359,7 @@ server.registerTool(
     },
   },
   async ({ path: workspacePath }) => {
+    activeWorkspacePath = workspacePath;
     const results: Record<string, any> = {};
     const languages: Language[] = [];
     if (config.python.enabled) languages.push("python");
@@ -423,38 +383,167 @@ server.registerTool(
     );
 
     return {
-      content: [{
-        type: "text",
-        text: JSON.stringify({
-          success: true,
-          workspace: workspacePath,
-          results,
-        }, null, 2),
-      }],
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            success: true,
+            workspace: workspacePath,
+            results,
+          }, null, 2),
+        },
+      ],
     };
   }
 );
 
-
 /**
- * Pre-register all known tools for enabled backends.
- * Each tool auto-starts its backend on first call.
+ * Pre-register all tools.
+ * 1. Unified tools (hover, definition, etc.) with automatic routing.
+ * 2. Language-specific tools with prefixes.
  */
-function preRegisterKnownTools(): void {
-  const languages: Language[] = [];
-  if (config.python.enabled) languages.push("python");
-  if (config.typescript.enabled) languages.push("typescript");
-  if (config.vue.enabled) languages.push("vue");
+function preRegisterTools(): void {
+  // 1. Register Unified Tools
+  for (const tool of UNIFIED_TOOLS) {
+    server.registerTool(
+      tool.name,
+      {
+        description: `${tool.description} (unified tool, routes automatically by file extension)`,
+        inputSchema: tool.schema,
+      },
+      async (args) => {
+        // Find the target path argument
+        const filePath = (args.file as string) || (args.path as string);
+        
+        // Handle search without path (uses active workspace implicitly via backend logic)
+        // But for routing, we need to know which backend to ask.
+        // If no path is provided for search, we might want to query ALL active backends?
+        // Or default to a primary one.
+        // For now, let's keep search simple: if no path, we can't infer language easily unless we check active workspace.
+        
+        // Special case for search
+        if (tool.name === "search" && !filePath) {
+             // For global search without path, we might need a different strategy.
+             // But for now, let's error if we can't determine context, or default to all if possible.
+             // Actually, search tool in backends now supports optional path.
+             // If we want to support "search in current context", we need to know what the context is.
+             // Let's iterate over started backends and search in all?
+             // That's complex. Let's require path for now or default to python if active.
+             // Better: Allow search to take a 'language' param optionally, or infer from active workspace if only one is active.
+             
+             // Let's implement a simple "try all enabled" for global search
+             const languages: Language[] = ["python", "typescript", "vue"];
+             const results = [];
+             for (const lang of languages) {
+                 // Only search if backend is started to avoid slow startup for just a search
+                 if (startedBackends.has(lang)) {
+                     try {
+                         const res = await backendManager.callTool(lang, "search", args as Record<string, unknown>);
+                         results.push(JSON.parse(res.content[0].text));
+                     } catch (e) {
+                         // ignore
+                     }
+                 }
+             }
+             if (results.length === 0) {
+                 return { content: [{ type: "text", text: JSON.stringify({ matches: [], count: 0, message: "No active backends to search in. Please specify a file path to auto-start a backend." }) }] };
+             }
+             // Aggregate results (simplified)
+             const allMatches = results.flatMap(r => r.matches || []);
+             return { content: [{ type: "text", text: JSON.stringify({ matches: allMatches, count: allMatches.length }) }] };
+        }
 
-  let totalCount = 0;
+        if (!filePath) {
+          return {
+            content: [{ type: "text", text: JSON.stringify({ error: "Missing 'file' or 'path' argument required for unified routing" }) }],
+          };
+        }
 
+        // Infer language from path
+        const language = inferLanguageFromPath(filePath);
+        if (!language) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "Unsupported File Type",
+                  message: `Cannot determine language for file '${filePath}'. Unified tools require a recognized file extension (.py, .ts, .vue, etc.)`,
+                })
+              },
+            ],
+          };
+        }
+
+        // Auto-start backend if not started
+        if (!startedBackends.has(language)) {
+          console.error(`[lsp-mcp] Auto-starting ${language} backend for unified ${tool.name}...`);
+          try {
+            await backendManager.getBackend(language);
+            startedBackends.add(language);
+
+            // Sync active workspace if set
+            if (activeWorkspacePath) {
+              console.error(`[lsp-mcp] Syncing active workspace to ${language}: ${activeWorkspacePath}`);
+              try {
+                await backendManager.callTool(language, "switch_workspace", { path: activeWorkspacePath });
+              } catch (syncError) {
+                console.error(`[lsp-mcp] Failed to sync workspace to ${language}:`, syncError);
+              }
+            }
+          } catch (error) {
+            return {
+              content: [{ type: "text", text: JSON.stringify({ error: `Failed to start ${language} backend: ${error}` }) }],
+            };
+          }
+        }
+
+        // Capability Check: check if the backend actually supports this tool
+        const availableTools = await backendManager.getTools(language);
+        const supportsTool = availableTools.some(t => t.name === tool.name);
+
+        if (!supportsTool) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "Not Implemented",
+                  message: `The '${language}' backend does not support the '${tool.name}' feature yet.`,
+                  available_tools: availableTools.map(t => t.name),
+                })
+              },
+            ],
+          };
+        }
+
+        // Rename argument for specific backend mismatches if any
+        const backendArgs = { ...args } as Record<string, unknown>;
+        if (tool.name === "rename") {
+          if (language === "python") {
+            // Python backend uses 'new_name'
+            backendArgs.new_name = args.newName || args.new_name;
+          } else {
+            // TS/Vue uses 'newName'
+            backendArgs.newName = args.newName || args.new_name;
+          }
+        }
+
+        // Call the actual backend tool
+        return backendManager.callTool(language, tool.name, backendArgs);
+      }
+    );
+    registeredTools.add(tool.name);
+  }
+
+  // 2. Register Language-Specific Tools
+  const languages: Language[] = ["python", "typescript", "vue"];
   for (const language of languages) {
-    const tools = KNOWN_TOOLS[language];
+    const tools = LANGUAGE_SPECIFIC_TOOLS[language];
     if (!tools) continue;
 
     for (const tool of tools) {
       const namespacedName = `${language}_${tool.name}`;
-
       server.registerTool(
         namespacedName,
         {
@@ -462,41 +551,36 @@ function preRegisterKnownTools(): void {
           inputSchema: tool.schema,
         },
         async (args) => {
-          // Auto-start backend if not started
           if (!startedBackends.has(language)) {
-            console.error(`[lsp-mcp] Auto-starting ${language} backend for ${tool.name}...`);
-            try {
-              await backendManager.getBackend(language);
-              startedBackends.add(language);
-              console.error(`[lsp-mcp] ${language} backend started`);
-            } catch (error) {
-              return {
-                content: [{ type: "text" as const, text: JSON.stringify({ error: `Failed to start ${language} backend: ${error}` }) }],
-              };
+            await backendManager.getBackend(language);
+            startedBackends.add(language);
+
+            // Sync active workspace if set
+            if (activeWorkspacePath) {
+              console.error(`[lsp-mcp] Syncing active workspace to ${language}: ${activeWorkspacePath}`);
+              try {
+                await backendManager.callTool(language, "switch_workspace", { path: activeWorkspacePath });
+              } catch (syncError) {
+                console.error(`[lsp-mcp] Failed to sync workspace to ${language}:`, syncError);
+              }
             }
           }
-
-          // Call the actual backend tool
           return backendManager.callTool(language, tool.name, args as Record<string, unknown>);
         }
       );
-
       registeredTools.add(namespacedName);
-      totalCount++;
     }
-
-    console.error(`[lsp-mcp] Pre-registered ${tools.length} ${language} tools`);
   }
 
-  console.error(`[lsp-mcp] Total: ${totalCount} tools pre-registered (backends start on first use)`);
+  console.error(`[lsp-mcp] Unified and language-specific tools registered`);
 }
 
-// Pre-register all known tools at module load time
-preRegisterKnownTools();
+// Pre-register all tools
+preRegisterTools();
 
-// ============================================================================
+// ============================================================================ 
 // Graceful Shutdown
-// ============================================================================
+// ============================================================================ 
 
 async function gracefulShutdown(signal: string): Promise<void> {
   console.error(`\n[lsp-mcp] Received ${signal}, shutting down gracefully...`);
@@ -515,9 +599,9 @@ async function gracefulShutdown(signal: string): Promise<void> {
 process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 
-// ============================================================================
+// ============================================================================ 
 // Main
-// ============================================================================
+// ============================================================================ 
 
 async function main() {
   console.error("LSP MCP Server - Unified Multi-Language Code Intelligence");

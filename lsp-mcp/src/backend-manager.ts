@@ -24,6 +24,7 @@ interface BackendState {
     name: string;
     version: string;
   };
+  lastUsed: number;
 }
 
 export interface BackendVersionInfo {
@@ -38,9 +39,57 @@ export class BackendManager {
   private backends: Map<Language, BackendState> = new Map();
   private startPromises: Map<Language, Promise<BackendState>> = new Map();
   private config: Config;
+  private idleCheckInterval: NodeJS.Timer | null = null;
 
   constructor(config: Config) {
     this.config = config;
+    
+    // Start idle check if enabled
+    if (this.config.idleTimeout > 0) {
+      // Check every minute
+      this.idleCheckInterval = setInterval(() => this.checkIdle(), 60 * 1000);
+      // Ensure we don't block process exit
+      if (this.idleCheckInterval.unref) {
+        this.idleCheckInterval.unref();
+      }
+    }
+  }
+
+  /**
+   * Check for idle backends and shut them down.
+   */
+  private async checkIdle(): Promise<void> {
+    const now = Date.now();
+    const timeoutMs = this.config.idleTimeout * 1000;
+
+    for (const [lang, state] of this.backends.entries()) {
+      if (state.status === "ready" && (now - state.lastUsed) > timeoutMs) {
+        console.error(`[BackendManager] ${lang} backend idle for ${this.config.idleTimeout}s, shutting down...`);
+        await this.shutdownBackend(lang);
+      }
+    }
+  }
+
+  /**
+   * Update the configuration.
+   * This does not automatically restart backends, but new backends will use the new config.
+   * To apply changes to running backends, they need to be restarted.
+   */
+  updateConfig(newConfig: Config): void {
+    this.config = newConfig;
+    
+    // Update idle timer if changed
+    if (this.idleCheckInterval) {
+      clearInterval(this.idleCheckInterval);
+      this.idleCheckInterval = null;
+    }
+    
+    if (this.config.idleTimeout > 0) {
+      this.idleCheckInterval = setInterval(() => this.checkIdle(), 60 * 1000);
+      if (this.idleCheckInterval.unref) {
+        this.idleCheckInterval.unref();
+      }
+    }
   }
 
   /**
@@ -51,6 +100,7 @@ export class BackendManager {
     // Return existing ready backend
     const existing = this.backends.get(language);
     if (existing && existing.status === "ready") {
+      existing.lastUsed = Date.now();
       return existing;
     }
 
@@ -111,6 +161,7 @@ export class BackendManager {
       tools: [],
       status: "starting",
       restartCount: 0,
+      lastUsed: Date.now(),
     };
 
     this.backends.set(language, state);
@@ -161,6 +212,7 @@ export class BackendManager {
     }
 
     try {
+      state.lastUsed = Date.now();
       const result = await state.client.callTool({
         name: toolName,
         arguments: args,
@@ -176,6 +228,7 @@ export class BackendManager {
         if (!restarted || restarted.status !== "ready") {
           throw new Error(`${language} backend failed to restart`);
         }
+        restarted.lastUsed = Date.now();
         const result = await restarted.client.callTool({
           name: toolName,
           arguments: args,
@@ -219,6 +272,24 @@ export class BackendManager {
     );
 
     return result;
+  }
+
+  /**
+   * Shutdown a specific backend.
+   */
+  async shutdownBackend(language: Language): Promise<void> {
+    const state = this.backends.get(language);
+    if (!state) return;
+
+    try {
+      console.error(`[BackendManager] Shutting down ${language}...`);
+      await state.transport.close();
+      await state.client.close();
+    } catch (error) {
+      console.error(`[BackendManager] Error closing ${language}:`, error);
+    } finally {
+      this.backends.delete(language);
+    }
   }
 
   /**
@@ -323,6 +394,11 @@ export class BackendManager {
    */
   async shutdown(): Promise<void> {
     console.error("[BackendManager] Shutting down all backends...");
+
+    if (this.idleCheckInterval) {
+      clearInterval(this.idleCheckInterval);
+      this.idleCheckInterval = null;
+    }
 
     const shutdownPromises = Array.from(this.backends.entries()).map(
       async ([lang, state]) => {

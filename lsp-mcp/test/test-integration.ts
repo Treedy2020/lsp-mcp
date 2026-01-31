@@ -160,6 +160,23 @@ async function testBackendManager() {
   // Note: Since we are not starting actual backends here, we can't fully test 
   // the switch_workspace forwarding without mocking the clients.
   // But we can verify the manager structure supports it.
+
+  // Test Hot Configuration
+  console.log("Testing Hot Configuration...");
+  const newConfig = { ...config, idleTimeout: 30 }; // Change timeout
+  manager.updateConfig(newConfig);
+  // verifying internal state via side effects is hard without access to private props
+  // but at least it didn't crash
+  console.log("  updateConfig: OK");
+
+  // Test Resource Reclaim (Shutdown logic)
+  console.log("Testing Resource Reclaim...");
+  // We can't easily test the timer triggering without mocking time, 
+  // but we can test that shutdownBackend handles non-existent backends gracefully
+  await manager.shutdownBackend("python"); 
+  const statusAfterShutdown = manager.getStatus();
+  console.assert(statusAfterShutdown.python.status === "not_started", "Python should be stopped");
+  console.log("  shutdownBackend: OK");
   
   // Cleanup
   await manager.shutdown();

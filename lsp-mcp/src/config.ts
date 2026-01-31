@@ -30,6 +30,7 @@ export interface Config {
   };
   autoUpdate: boolean; // If true, always fetch latest versions on startup
   eagerStart: boolean; // If true, start all backends at startup (makes tools available immediately)
+  idleTimeout: number; // Idle timeout in seconds (0 = disabled)
 }
 
 /**
@@ -52,6 +53,9 @@ export function loadConfig(): Config {
   // If false (default), backends are loaded on-demand via start_backend tool
   const eagerStart = getEnvBool("LSP_MCP_EAGER_START", false);
 
+  // Idle timeout in seconds (default 10 minutes)
+  const idleTimeout = parseInt(getEnvString("LSP_MCP_IDLE_TIMEOUT", "600"), 10);
+
   return {
     python: {
       enabled: pythonEnabled,
@@ -65,6 +69,7 @@ export function loadConfig(): Config {
     },
     autoUpdate,
     eagerStart,
+    idleTimeout,
   };
 }
 
