@@ -41,3 +41,4 @@ htmlcov/
 # Logs
 *.log
 \n# Benchmarks\nbenchmarks/
+\n.codex/\n.gemini/

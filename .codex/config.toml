@@ -1,3 +1,0 @@
-[mcp_servers.lsp-mcp-local]
-command = "bun"
-args = ["/Users/treedy/Project/PyLspMcp/lsp-mcp/src/index.ts"]
