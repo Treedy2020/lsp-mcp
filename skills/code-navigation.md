@@ -1,116 +1,87 @@
 # Code Navigation Skill
 
-Navigate Python and TypeScript codebases efficiently using LSP tools.
+Navigate multi-language codebases efficiently using unified LSP tools.
 
-## When to Use
+## Critical: Workspace Management
 
-- Understanding unfamiliar code
-- Finding where a function/class is defined
-- Tracing how code flows across files
-- Getting type information without reading entire files
-- **Learning APIs before using them** - hover() and signature_help() provide documentation
+**Before doing anything else, always set the active workspace.**
 
-## Tools
+```
+switch_workspace(path="/path/to/project/root")
+```
+
+- This ensures language servers are initialized for the correct project context.
+- Files outside the active workspace cannot be accessed (you will get a "Context Mismatch" error).
+- **Tip**: You can use relative paths (e.g., `src/main.ts`) once the workspace is set.
+
+## Tools (Unified)
+
+These tools work for **Python (.py)**, **TypeScript/JavaScript (.ts/.js)**, and **Vue (.vue)**.
 
 ### hover
 
-Get type info and documentation for a symbol.
+Get documentation and type info without reading the file.
 
 ```
 hover(file, line, column)
 ```
 
 **Use when:**
-- You need to know the type of a variable
-- You want to see a function's signature
-- You need docstring without navigating to definition
-
-**Example workflow:**
-```
-User: What type is `result` on line 42?
-Agent: [calls hover(file, 42, 10)]
-       → "result: list[User]"
-```
+- You see a function call and want to know its parameters.
+- You need to know the type of a variable.
+- **Tip**: Use this *instead* of reading the definition file to save context tokens.
 
 ### definition
 
-Jump to where a symbol is defined.
+Find where a symbol is defined.
 
 ```
 definition(file, line, column)
 ```
 
 **Use when:**
-- You need to see the implementation
-- You want to understand how something works
-- User asks "where is X defined?"
-
-**Example workflow:**
-```
-User: Show me the UserService class
-Agent: [calls definition(file, 15, 8)]  # on 'UserService' usage
-       → file: "services/user.py", line: 12
-Agent: [reads services/user.py]
-```
+- You need to read the implementation details.
+- You want to jump from usage to source.
 
 ### references
 
-Find all usages of a symbol.
+Find all usages of a symbol across the project.
 
 ```
 references(file, line, column)
 ```
 
 **Use when:**
-- Understanding impact of a change
-- Finding all callers of a function
-- User asks "where is X used?"
+- Analyzing the impact of a potential change.
+- Finding who calls a function.
 
-**Example workflow:**
-```
-User: Where is calculate_total used?
-Agent: [calls references(file, 20, 5)]  # on function definition
-       → [
-           {"file": "orders.py", "line": 45},
-           {"file": "cart.py", "line": 112},
-           {"file": "tests/test_calc.py", "line": 23}
-         ]
-```
+### symbols
 
-## Navigation Patterns
-
-### Pattern 1: Trace a Call Chain
+List all classes, functions, and variables in a file.
 
 ```
-1. Start at entry point
-2. hover() to understand types
-3. definition() to dive deeper
-4. Repeat until you understand the flow
+symbols(file, query?)
 ```
 
-### Pattern 2: Impact Analysis
+**Use when:**
+- You want a high-level overview of a file's structure.
+- You are looking for a specific method in a large file.
 
-```
-1. Find the symbol to change
-2. references() to find all usages
-3. For each reference, hover() to understand context
-4. Plan changes based on impact
-```
+## Best Practices
 
-### Pattern 3: Understanding Imports
+### 1. The "Peek" Workflow (Save Tokens)
+Instead of reading a file immediately:
+1.  `symbols(file)` -> See what's inside.
+2.  `hover(file, line, col)` -> Check docstrings of interesting functions.
+3.  `read_file(file)` -> Only if you really need the implementation.
 
-```
-1. On imported symbol, definition() to find source
-2. symbols() on source file to see what's available
-3. hover() on specific items for details
-```
+### 2. Trace Calls Efficiently
+1.  Start at `main.ts` or entry point.
+2.  `definition(file, line, col)` to jump to a function.
+3.  `switch_workspace` if the definition is in another sub-project (e.g., jumping from `frontend` to `backend`).
 
-## Tips
-
-- **Position matters**: Column should point to the START of the symbol
-- **Line numbers are 1-based**: First line is 1, not 0
-- **Cross-file works automatically**: definition() and references() work across the entire project
-- **Use hover first**: It's fast and often gives enough info without needing to read files
-- **Learn before coding**: Use hover() to understand method signatures before using APIs
-- **Chain with search()**: Use search() to find positions, then navigate with hover/definition/references
-- **Always verify**: After making changes, run diagnostics() to catch errors early
+### 3. Use Relative Paths
+Once workspace is set to `/project/root`, you can simply call:
+`hover("src/utils.ts", ...)`
+Instead of:
+`hover("/project/root/src/utils.ts", ...)`

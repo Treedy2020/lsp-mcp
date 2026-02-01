@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "lsp-mcp-local": {
+      "command": "bun",
+      "args": [
+        "./lsp-mcp/src/index.ts"
+      ]
+    }
+  }
+}

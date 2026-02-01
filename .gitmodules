@@ -1,0 +1,9 @@
+[submodule "backends/typescript/typescript-lsp-mcp"]
+	path = backends/typescript/typescript-lsp-mcp
+	url = https://github.com/Treedy2020/typescript-lsp-mcp.git
+[submodule "backends/vue/vue-lsp-mcp"]
+	path = backends/vue/vue-lsp-mcp
+	url = https://github.com/Treedy2020/vue-lsp-mcp.git
+[submodule "backends/python/python-lsp-mcp"]
+	path = backends/python/python-lsp-mcp
+	url = https://github.com/Treedy2020/python-lsp-mcp.git

@@ -40,6 +40,49 @@ export interface Config {
   idleTimeout: number;
 }
 
+import * as path from "path";
+import * as fs from "fs";
+import * as os from "os";
+import { fileURLToPath } from "url";
+
+/**
+ * Configuration system for the unified LSP MCP server.
+ *
+ * Supports environment variables and programmatic configuration.
+ */
+
+export type Language = string;
+
+export interface LanguageConfig {
+  enabled: boolean;
+  command?: string;
+  args?: string[];
+  extensions: string[];
+  // Environment variables to set for this backend
+  env?: Record<string, string>;
+}
+
+export interface BackendConfig {
+  enabled: boolean;
+  command: string;
+  args: string[];
+  env?: Record<string, string>;
+}
+
+export interface Config {
+  // Generic language configurations
+  languages: Record<string, LanguageConfig>;
+  
+  // Legacy fields for backward compatibility
+  python?: { enabled: boolean; provider: string };
+  typescript?: { enabled: boolean };
+  vue?: { enabled: boolean };
+
+  autoUpdate: boolean;
+  eagerStart: boolean;
+  idleTimeout: number;
+}
+
 // Default extensions mapping
 const DEFAULT_EXTENSIONS: Record<string, string[]> = {
   python: [".py", ".pyi", ".pyw"],
@@ -47,62 +90,135 @@ const DEFAULT_EXTENSIONS: Record<string, string[]> = {
   vue: [".vue"],
 };
 
-/**
- * Load configuration from environment variables.
- */
-export function loadConfig(): Config {
-  const pythonEnabled = getEnvBool("LSP_MCP_PYTHON_ENABLED", true);
-  const pythonProvider = getEnvString("LSP_MCP_PYTHON_PROVIDER", "python-lsp-mcp");
-
-  const typescriptEnabled = getEnvBool("LSP_MCP_TYPESCRIPT_ENABLED", true);
-  const vueEnabled = getEnvBool("LSP_MCP_VUE_ENABLED", true);
-
-  const autoUpdate = getEnvBool("LSP_MCP_AUTO_UPDATE", true);
-  const eagerStart = getEnvBool("LSP_MCP_EAGER_START", false);
-  const idleTimeout = parseInt(getEnvString("LSP_MCP_IDLE_TIMEOUT", "600"), 10);
-
-  // Construct generic languages config from defaults + env vars
-  const languages: Record<string, LanguageConfig> = {
+const DEFAULT_CONFIG: Config = {
+  languages: {
     python: {
-      enabled: pythonEnabled,
+      enabled: true,
       extensions: DEFAULT_EXTENSIONS.python,
-      // Command/args are resolved dynamically for now to support bundling logic
     },
     typescript: {
-      enabled: typescriptEnabled,
+      enabled: true,
       extensions: DEFAULT_EXTENSIONS.typescript,
     },
     vue: {
-      enabled: vueEnabled,
+      enabled: true,
       extensions: DEFAULT_EXTENSIONS.vue,
     },
+  },
+  autoUpdate: true,
+  eagerStart: false,
+  idleTimeout: 600,
+};
+
+/**
+ * Load configuration from file and environment variables.
+ */
+export function loadConfig(): Config {
+  // 1. Load from config file
+  const fileConfig = loadConfigFile();
+
+  // 2. Load from environment variables
+  const envConfig = loadEnvConfig();
+
+  // 3. Merge: Env > File > Default
+  const merged: Config = {
+    ...DEFAULT_CONFIG,
+    ...fileConfig,
+    ...envConfig,
+    languages: {
+      ...DEFAULT_CONFIG.languages,
+      ...(fileConfig?.languages || {}),
+      // Merge env config for languages carefully
+      ...Object.keys(DEFAULT_CONFIG.languages).reduce((acc, lang) => {
+        // If env has explicit setting, override
+        if (envConfig.languages?.[lang]) {
+            acc[lang] = {
+                ...(fileConfig?.languages?.[lang] || DEFAULT_CONFIG.languages[lang]),
+                ...envConfig.languages[lang]
+            };
+        }
+        return acc;
+      }, {} as Record<string, LanguageConfig>)
+    }
   };
 
-  return {
-    languages,
-    // Preserve legacy structure for now if needed by other parts of the code
-    python: { enabled: pythonEnabled, provider: pythonProvider },
-    typescript: { enabled: typescriptEnabled },
-    vue: { enabled: vueEnabled },
-    autoUpdate,
-    eagerStart,
-    idleTimeout,
-  };
+  // Ensure extensions are set if missing in file config
+  for (const [lang, cfg] of Object.entries(merged.languages)) {
+      if (!cfg.extensions && DEFAULT_EXTENSIONS[lang]) {
+          cfg.extensions = DEFAULT_EXTENSIONS[lang];
+      }
+  }
+
+  return merged;
+}
+
+function loadConfigFile(): Partial<Config> | null {
+    const locations = [
+        path.resolve(process.cwd(), ".lsp-mcp.json"),
+        path.join(os.homedir(), ".config", "lsp-mcp", "config.json")
+    ];
+    
+    for (const loc of locations) {
+        if (fs.existsSync(loc)) {
+            try {
+                console.error(`[Config] Loading configuration from ${loc}`);
+                const content = fs.readFileSync(loc, "utf-8");
+                return JSON.parse(content);
+            } catch (e) {
+                console.error(`[Config] Failed to parse config file ${loc}: ${e}`);
+            }
+        }
+    }
+    return null;
+}
+
+function loadEnvConfig(): Partial<Config> {
+  const pythonEnabled = getEnvBool("LSP_MCP_PYTHON_ENABLED");
+  const pythonProvider = getEnvString("LSP_MCP_PYTHON_PROVIDER");
+  const typescriptEnabled = getEnvBool("LSP_MCP_TYPESCRIPT_ENABLED");
+  const vueEnabled = getEnvBool("LSP_MCP_VUE_ENABLED");
+
+  const autoUpdate = getEnvBool("LSP_MCP_AUTO_UPDATE");
+  const eagerStart = getEnvBool("LSP_MCP_EAGER_START");
+  const idleTimeoutStr = getEnvString("LSP_MCP_IDLE_TIMEOUT");
+  const idleTimeout = idleTimeoutStr ? parseInt(idleTimeoutStr, 10) : undefined;
+
+  const config: Partial<Config> = {};
+  const languages: Record<string, Partial<LanguageConfig>> = {};
+
+  if (pythonEnabled !== undefined) languages.python = { enabled: pythonEnabled };
+  if (typescriptEnabled !== undefined) languages.typescript = { enabled: typescriptEnabled };
+  if (vueEnabled !== undefined) languages.vue = { enabled: vueEnabled };
+
+  if (Object.keys(languages).length > 0) config.languages = languages as any;
+  if (autoUpdate !== undefined) config.autoUpdate = autoUpdate;
+  if (eagerStart !== undefined) config.eagerStart = eagerStart;
+  if (idleTimeout !== undefined) config.idleTimeout = idleTimeout;
+  
+  // Legacy support
+  if (pythonEnabled !== undefined || pythonProvider) {
+      config.python = { 
+          enabled: pythonEnabled ?? true, 
+          provider: pythonProvider ?? "python-lsp-mcp" 
+      };
+  }
+
+  return config;
 }
 
 /**
- * Get a boolean from an environment variable.
+ * Get a boolean from an environment variable. Returns undefined if not set.
  */
-function getEnvBool(name: string, defaultValue: boolean): boolean {
+function getEnvBool(name: string, defaultValue?: boolean): boolean | undefined {
   const value = process.env[name];
   if (value === undefined) return defaultValue;
   return value.toLowerCase() === "true" || value === "1";
 }
 
 /**
- * Get a string from an environment variable.
+ * Get a string from an environment variable. Returns undefined if not set.
  */
-function getEnvString(name: string, defaultValue: string): string {
+function getEnvString(name: string, defaultValue?: string): string | undefined {
   return process.env[name] ?? defaultValue;
 }
 
@@ -187,6 +303,7 @@ export function getBackendCommand(
       enabled: true,
       command: langConfig.command,
       args: langConfig.args || [],
+      env: langConfig.env,
     };
   }
 
