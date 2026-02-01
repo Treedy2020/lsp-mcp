@@ -339,8 +339,7 @@ def rename(file: str, line: int, column: int, new_name: str) -> str:
     """Rename the symbol at the given position.
 
     This will modify files on disk to rename all occurrences of the symbol.
-    Uses Rope backend for best refactoring support.
-
+    
     Args:
         file: Path to the Python file (absolute or relative to active workspace)
         line: 1-based line number
@@ -355,9 +354,39 @@ def rename(file: str, line: int, column: int, new_name: str) -> str:
     if error:
         return json.dumps(error, indent=2)
 
-    result = do_rename(abs_file, line, column, new_name)
-    result["backend"] = "rope"
-    return json.dumps(result, indent=2)
+    # Determine backend (Pyright is now supported for rename)
+    # Since we moved rename to SHARED_TOOLS, we can use config logic
+    effective_backend = get_config().get_backend_for("rename")
+
+    if effective_backend == Backend.PYRIGHT:
+        try:
+            workspace = _find_workspace(abs_file)
+            client = get_lsp_client(workspace)
+            edit = client.rename(abs_file, line, column, new_name)
+            
+            if not edit:
+                return json.dumps({
+                    "error": "Rename returned no changes. Symbol might not be renamable or Pyright failed.",
+                    "backend": "pyright"
+                }, indent=2)
+                
+            # Reuse the helper from run_code_action
+            _apply_workspace_edit(edit)
+            
+            return json.dumps({
+                "success": True, 
+                "message": f"Renamed symbol to '{new_name}'", 
+                "backend": "pyright",
+                "changes": edit.get("changes") or edit.get("documentChanges")
+            }, indent=2)
+            
+        except Exception as e:
+            return json.dumps({"error": str(e), "backend": "pyright"}, indent=2)
+    else:
+        # Rope fallback
+        result = do_rename(abs_file, line, column, new_name)
+        result["backend"] = "rope"
+        return json.dumps(result, indent=2)
 
 
 @mcp.tool()
@@ -739,9 +768,26 @@ def run_code_action(
 
 def _apply_workspace_edit(edit: dict) -> None:
     """Apply a WorkspaceEdit to files on disk."""
-    changes = edit.get("changes", {})
+    changes = edit.get("changes")
+    document_changes = edit.get("documentChanges")
     
-    for uri, text_edits in changes.items():
+    # Normalize to dict of uri -> edits
+    all_edits = {}
+    
+    if changes:
+        all_edits.update(changes)
+        
+    if document_changes:
+        for change in document_changes:
+            # Check if it's TextDocumentEdit (has textDocument and edits)
+            if "textDocument" in change and "edits" in change:
+                uri = change["textDocument"]["uri"]
+                if uri not in all_edits:
+                    all_edits[uri] = []
+                all_edits[uri].extend(change["edits"])
+            # TODO: Handle CreateFile, RenameFile, DeleteFile if needed
+    
+    for uri, text_edits in all_edits.items():
         file_path = uri.replace("file://", "")
         if sys.platform == "win32" and file_path.startswith("/"):
             file_path = file_path[1:]
@@ -753,10 +799,6 @@ def _apply_workspace_edit(edit: dict) -> None:
             content = f.read()
             
         # Apply edits in reverse order
-        # Need to convert LSP line/col to offsets
-        # This requires robust handling. For now, let's use a simple approach if edits are sorted.
-        # But text_edits from LSP are not guaranteed sorted.
-        
         # Sort edits by start position descending
         text_edits.sort(key=lambda e: (e["range"]["start"]["line"], e["range"]["start"]["character"]), reverse=True)
         

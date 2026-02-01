@@ -22,10 +22,10 @@ class Backend(Enum):
 
 
 # Tools that support both backends
-SHARED_TOOLS = {"hover", "definition", "references", "completions", "symbols"}
+SHARED_TOOLS = {"hover", "definition", "references", "completions", "symbols", "rename"}
 
 # Tools exclusive to each backend
-ROPE_ONLY_TOOLS = {"rename"}  # Rope has better refactoring
+ROPE_ONLY_TOOLS = set()  # Rope has better refactoring (move, change_signature)
 PYRIGHT_ONLY_TOOLS = {"diagnostics", "signature_help"}  # Pyright exclusive
 
 # Environment variable prefix (supports both old and new names)
@@ -37,7 +37,9 @@ class ServerConfig:
     """Configuration for the MCP server."""
 
     # Default backend for shared features
-    default_backend: Backend = Backend.ROPE
+    # Pyright is generally more robust for read operations as it doesn't require
+    # perfect environment setup (like running imports).
+    default_backend: Backend = Backend.PYRIGHT
 
     # Per-tool backend overrides (None = use default)
     tool_backends: dict[str, Backend] = field(default_factory=dict)
@@ -47,7 +49,7 @@ class ServerConfig:
         """Create config from environment variables.
 
         Environment variables (PYTHON_LSP_MCP_ or ROPE_MCP_ prefix):
-            *_BACKEND: Default backend (rope/pyright), default: rope
+            *_BACKEND: Default backend (rope/pyright), default: pyright
             *_HOVER_BACKEND: Backend for hover (rope/pyright)
             *_DEFINITION_BACKEND: Backend for definition
             *_REFERENCES_BACKEND: Backend for references
@@ -63,9 +65,9 @@ class ServerConfig:
                     return val
             return None
 
-        default = get_env("BACKEND") or "rope"
+        default = get_env("BACKEND") or "pyright"
         default_backend = (
-            Backend(default) if default in ["rope", "pyright"] else Backend.ROPE
+            Backend(default) if default in ["rope", "pyright"] else Backend.PYRIGHT
         )
 
         tool_backends = {}

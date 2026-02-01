@@ -189,19 +189,25 @@ class LspClient:
             # Pyright asking for config
             items = message.get("params", {}).get("items", [])
             result = []
+            analysis_config = {
+                "typeCheckingMode": "basic",
+                "reportUnusedImport": "warning",
+                "reportUnusedVariable": "warning",
+                "autoImportCompletions": True,
+                "autoSearchPaths": True,
+                "useLibraryCodeForTypes": True,
+                "diagnosticMode": "workspace"
+            }
+            
             for item in items:
                 section = item.get("section")
                 if section == "python.analysis":
-                    result.append({
-                        "typeCheckingMode": "basic",
-                        "reportUnusedImport": "warning",
-                        "reportUnusedVariable": "warning",
-                        "autoImportCompletions": True,
-                        "autoSearchPaths": True,
-                        "useLibraryCodeForTypes": True
-                    })
+                    result.append(analysis_config)
+                elif section == "python":
+                    result.append({"analysis": analysis_config})
                 else:
-                    result.append({})
+                    # Return analysis config for everything to be safe
+                    result.append(analysis_config)
             
             self._send_response(req_id, result)
             
@@ -646,6 +652,22 @@ class LspClient:
         if not result:
             return []
 
+        return result
+
+    def rename(self, file_path: str, line: int, column: int, new_name: str) -> Optional[dict]:
+        """Rename symbol at position."""
+        self.open_document(file_path)
+        uri = self._path_to_uri(file_path)
+
+        result = self._send_request(
+            "textDocument/rename",
+            {
+                "textDocument": {"uri": uri},
+                "position": {"line": line - 1, "character": column - 1},
+                "newName": new_name,
+            },
+        )
+        
         return result
 
     def document_symbols(self, file_path: str) -> list[dict]:

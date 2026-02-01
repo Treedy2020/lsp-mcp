@@ -377,6 +377,8 @@ All LSP tools use (file, line, column) positions.
 Always end with diagnostics to ensure code quality.`,
 };
 
+import { z } from "zod";
+
 /**
  * Register all skill prompts on the MCP server.
  */
@@ -441,6 +443,50 @@ export function registerPrompts(server: McpServer): void {
     ],
   }));
 
+  // Action: Explore Project
+  server.registerPrompt("explore-project", {
+    description: "Analyze the current project structure and key files using semantic summaries",
+    args: {
+      path: z.string().optional().describe("Project root path (optional, defaults to active workspace)"),
+    }
+  }, async ({ path }) => ({
+    messages: [{
+      role: "user",
+      content: {
+        type: "text",
+        text: `Please explore the project at '${path || "current workspace"}'.
+
+Recommended Workflow:
+1. List files to understand the directory structure (use 'ls' or 'glob').
+2. Identify key entry points (e.g., main.py, index.ts, App.vue, pyproject.toml, package.json).
+3. Use 'summarize_file' on these entry points to extract high-level symbols (classes/functions) without reading full content.
+4. Report back with a structural summary of the project.`
+      }
+    }]
+  }));
+
+  // Action: Debug File
+  server.registerPrompt("debug-file", {
+    description: "Deeply analyze a file for errors using diagnostics and inlay hints",
+    args: {
+      file: z.string().describe("Path to the file to debug"),
+    }
+  }, async ({ file }) => ({
+    messages: [{
+      role: "user",
+      content: {
+        type: "text",
+        text: `Please debug and analyze the file '${file}'.
+
+Recommended Workflow:
+1. Run 'diagnostics' on the file to identify syntax errors, type mismatches, or unused imports.
+2. Use 'read_file_with_hints' to read the content. This will reveal inferred types and parameter names, making it easier to spot logic errors.
+3. If errors are found, check specific locations with 'code_action' to see if auto-fixes (like 'Organize Imports') are available.
+4. Explain the findings and propose fixes.`
+      }
+    }]
+  }));
+
   // Combined quick reference
   server.registerPrompt("lsp-quick-start", {
     description: "Quick start guide - essential LSP workflow patterns",
@@ -454,10 +500,14 @@ export function registerPrompts(server: McpServer): void {
 
 ## Key Workflows
 
-### 1. Search → LSP Tools
+### 1. Smart Exploration
+Instead of reading raw code, use:
+\`\`\`
+summarize_file(file) → Get outline of classes/functions
+read_file_with_hints(file) → Read code with type/param annotations
+\`\`\`
 
-search() returns positions (file, line, column) that work directly with other LSP tools:
-
+### 2. Search → LSP Tools
 \`\`\`
 search("ClassName") → get positions
 hover(file, line, column) → get type info
@@ -465,53 +515,15 @@ definition(...) → jump to definition
 references(...) → find usages
 \`\`\`
 
-### 2. Learn API Before Using
-
-Before using unfamiliar methods/classes:
-
+### 3. Debug & Fix
 \`\`\`
-hover(file, line, column) → get documentation
-signature_help(...) → get parameter details
-→ Then write correct code
-\`\`\`
-
-### 3. Always Verify with Diagnostics
-
-After any code changes:
-
-\`\`\`
-Edit code
-diagnostics(path) → check for errors
-Fix issues
-Repeat until clean
-\`\`\`
-
-## Quick Reference
-
-\`\`\`
-# Navigation (use python/ or typescript/ prefix)
-hover(file, line, column)           → Get type info and docs
-definition(file, line, column)      → Jump to definition
-references(file, line, column)      → Find all usages
-
-# Analysis
-symbols(file)                       → List all symbols in file
-diagnostics(path)                   → Type errors and warnings
-search(pattern, path)               → Search code, returns LSP positions
-
-# Refactoring (Python only, modifies files)
-rename(file, line, column, new_name)              → Rename symbol
-move(file, line, column, destination)             → Move to another module
-change_signature(file, line, column, ...)         → Modify function params
+diagnostics(path) → Check for errors
+code_action(file, line, col) → Get quick fixes (e.g. Organize Imports)
+run_code_action(...) → Apply fix
 \`\`\`
 
 ## Tool Namespacing
-
-Tools are namespaced by language:
-- \`python/hover\`, \`python/definition\`, etc.
-- \`typescript/hover\`, \`typescript/definition\`, etc.
-
-Or use file extension auto-detection by providing a file path.
+Tools are unified! Just provide the file path, and the server auto-detects the language (Python/TS/Vue).
 `,
         },
       },
