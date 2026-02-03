@@ -8,11 +8,12 @@ export class McpTestClient {
   private pendingRequests = new Map<number, (result: any) => void>();
   public notifications: any[] = [];
 
-  constructor(serverPath: string) {
+  constructor(serverPath: string, options: { cwd?: string, env?: NodeJS.ProcessEnv } = {}) {
     // Run the TS source directly using bun
     this.process = spawn("bun", ["run", serverPath], {
       stdio: ["pipe", "pipe", "inherit"], // inherit stderr for logs
-      env: { ...process.env, "PATH": process.env.PATH }
+      env: { ...process.env, ...options.env, "PATH": process.env.PATH },
+      cwd: options.cwd
     });
 
     const rl = createInterface({ input: this.process.stdout! });

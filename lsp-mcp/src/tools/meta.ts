@@ -45,14 +45,14 @@ export async function status(
     description: "Unified MCP server for multi-language code intelligence",
     config: {
       python: {
-        enabled: config.python.enabled,
-        provider: config.python.provider,
+        enabled: config.languages.python?.enabled ?? false,
+        provider: config.python?.provider,
       },
       typescript: {
-        enabled: config.typescript.enabled,
+        enabled: config.languages.typescript?.enabled ?? false,
       },
       vue: {
-        enabled: config.vue.enabled,
+        enabled: config.languages.vue?.enabled ?? false,
       },
       autoUpdate: config.autoUpdate,
     },
@@ -189,8 +189,8 @@ export async function listBackends(
   const backends = [
     {
       name: "python",
-      enabled: config.python.enabled,
-      provider: config.python.provider,
+      enabled: config.languages.python?.enabled ?? false,
+      provider: config.python?.provider,
       status: backendStatus.python?.status || "not_started",
       tools: backendStatus.python?.tools || 0,
       description: "Python code intelligence (hover, definition, references, refactoring)",
@@ -198,7 +198,7 @@ export async function listBackends(
     },
     {
       name: "typescript",
-      enabled: config.typescript.enabled,
+      enabled: config.languages.typescript?.enabled ?? false,
       status: backendStatus.typescript?.status || "not_started",
       tools: backendStatus.typescript?.tools || 0,
       description: "TypeScript/JavaScript code intelligence",
@@ -206,7 +206,7 @@ export async function listBackends(
     },
     {
       name: "vue",
-      enabled: config.vue.enabled,
+      enabled: config.languages.vue?.enabled ?? false,
       status: backendStatus.vue?.status || "not_started",
       tools: backendStatus.vue?.tools || 0,
       description: "Vue Single File Component (.vue) code intelligence via Volar",
@@ -254,7 +254,7 @@ export async function startBackend(
   registerToolsCallback: RegisterToolsCallback
 ): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   // Check if enabled
-  if (language === "python" && !config.python.enabled) {
+  if (language === "python" && !config.languages.python?.enabled) {
     return {
       content: [{
         type: "text",
@@ -267,7 +267,7 @@ export async function startBackend(
     };
   }
 
-  if (language === "typescript" && !config.typescript.enabled) {
+  if (language === "typescript" && !config.languages.typescript?.enabled) {
     return {
       content: [{
         type: "text",
@@ -280,7 +280,7 @@ export async function startBackend(
     };
   }
 
-  if (language === "vue" && !config.vue.enabled) {
+  if (language === "vue" && !config.languages.vue?.enabled) {
     return {
       content: [{
         type: "text",
@@ -347,7 +347,7 @@ export async function updateBackend(
   updateCallback: UpdateBackendCallback
 ): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   // Check if enabled
-  if (language === "python" && !config.python.enabled) {
+  if (language === "python" && !config.languages.python?.enabled) {
     return {
       content: [{
         type: "text",
@@ -360,7 +360,7 @@ export async function updateBackend(
     };
   }
 
-  if (language === "typescript" && !config.typescript.enabled) {
+  if (language === "typescript" && !config.languages.typescript?.enabled) {
     return {
       content: [{
         type: "text",
@@ -373,7 +373,7 @@ export async function updateBackend(
     };
   }
 
-  if (language === "vue" && !config.vue.enabled) {
+  if (language === "vue" && !config.languages.vue?.enabled) {
     return {
       content: [{
         type: "text",

@@ -1,9 +1,9 @@
 {
   "mcpServers": {
     "lsp-mcp-local": {
-      "command": "npx",
+      "command": "bun",
       "args": [
-        "@treedy/lsp-mcp@latest"
+        "./lsp-mcp/src/index.ts"
       ]
     }
   }

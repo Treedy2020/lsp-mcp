@@ -1,6 +1,6 @@
 {
   "name": "@treedy/lsp-mcp",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Unified MCP server aggregating multi-language LSP backends for code intelligence",
   "type": "module",
   "main": "dist/index.js",

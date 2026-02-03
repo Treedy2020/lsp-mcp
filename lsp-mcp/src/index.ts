@@ -577,8 +577,21 @@ function preRegisterTools(): void {
               }
             }
           } catch (error) {
+            const msg = String(error);
+            let hint = "";
+            if (msg.includes("ENOENT")) {
+                if (language === "python") hint = "Make sure 'uv' (recommended) or 'python' is installed and in your PATH.";
+                else hint = "Make sure 'node' and 'npm' are installed and in your PATH.";
+            } else {
+                hint = "Check server logs for details. You may need to install the backend manually.";
+            }
+            
             return {
-              content: [{ type: "text", text: JSON.stringify({ error: `Failed to start ${language} backend: ${error}` }) }],
+              content: [{ type: "text", text: JSON.stringify({ 
+                  error: `Failed to start ${language} backend`, 
+                  details: msg,
+                  hint: hint
+              }, null, 2) }],
             };
           }
         }
@@ -711,7 +724,7 @@ function preRegisterTools(): void {
   // 2. Register Language-Specific Tools
   // Iterate over configured languages
   for (const [language, langConfig] of Object.entries(config.languages)) {
-    if (!langConfig.enabled) continue;
+    if (!langConfig?.enabled) continue;
 
     const tools = LANGUAGE_SPECIFIC_TOOLS[language];
     if (!tools) continue;
