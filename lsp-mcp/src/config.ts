@@ -144,7 +144,7 @@ export function loadConfig(): Config {
 
   // Ensure extensions are set if missing in file config
   for (const [lang, cfg] of Object.entries(merged.languages)) {
-      if (!cfg.extensions && DEFAULT_EXTENSIONS[lang]) {
+      if (cfg && !cfg.extensions && DEFAULT_EXTENSIONS[lang]) {
           cfg.extensions = DEFAULT_EXTENSIONS[lang];
       }
   }
@@ -230,7 +230,7 @@ export function inferLanguageFromPath(filePath: string, config: Config): Languag
   const ext = filePath.substring(filePath.lastIndexOf("."));
   
   for (const [lang, langConfig] of Object.entries(config.languages)) {
-    if (langConfig.enabled && langConfig.extensions.includes(ext)) {
+    if (langConfig?.enabled && langConfig.extensions.includes(ext)) {
       return lang;
     }
   }

@@ -348,7 +348,7 @@ export class BackendManager {
   async getAllTools(): Promise<Map<Language, Tool[]>> {
     const result = new Map<Language, Tool[]>();
     const languages = Object.keys(this.config.languages).filter(
-      (lang) => this.config.languages[lang].enabled
+      (lang) => this.config.languages[lang]?.enabled
     );
 
     await Promise.all(
@@ -409,7 +409,7 @@ export class BackendManager {
 
     // Add configured but not started backends
     for (const [lang, config] of Object.entries(this.config.languages)) {
-      if (config.enabled && !this.backends.has(lang)) {
+      if (config && config.enabled && !this.backends.has(lang)) {
         status[lang] = { status: "not_started", tools: 0, restartCount: 0 };
       }
     }
@@ -426,7 +426,7 @@ export class BackendManager {
   getVersions(): BackendVersionInfo[] {
     const versions: BackendVersionInfo[] = [];
     const languages = Object.keys(this.config.languages).filter(
-      (lang) => this.config.languages[lang].enabled
+      (lang) => this.config.languages[lang]?.enabled
     );
 
     for (const lang of languages) {
