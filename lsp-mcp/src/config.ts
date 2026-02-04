@@ -223,10 +223,56 @@ function getEnvString(name: string, defaultValue?: string): string | undefined {
 }
 
 /**
- * Infer the language from a file path based on its extension.
+ * Infer the language from a file path based on its extension or directory content.
  * Uses the provided configuration to look up extensions.
  */
 export function inferLanguageFromPath(filePath: string, config: Config): Language | null {
+  // 1. Check if it's a directory and infer from contents
+  if (fs.existsSync(filePath)) {
+    try {
+      const stat = fs.statSync(filePath);
+      if (stat.isDirectory()) {
+        // Priority 1: Config files
+        if (config.languages.typescript?.enabled && (
+            fs.existsSync(path.join(filePath, "tsconfig.json")) || 
+            fs.existsSync(path.join(filePath, "package.json"))
+        )) {
+            return "typescript";
+        }
+        
+        if (config.languages.python?.enabled && (
+            fs.existsSync(path.join(filePath, "pyproject.toml")) || 
+            fs.existsSync(path.join(filePath, "requirements.txt")) ||
+            fs.existsSync(path.join(filePath, "setup.py")) ||
+            fs.existsSync(path.join(filePath, "venv")) ||
+            fs.existsSync(path.join(filePath, ".venv"))
+        )) {
+            return "python";
+        }
+        
+        if (config.languages.vue?.enabled && (
+            fs.existsSync(path.join(filePath, "vite.config.ts")) ||
+            fs.existsSync(path.join(filePath, "vue.config.js"))
+        )) {
+            return "vue"; // Vue often overlaps with TS, but explicit config might hint preference
+        }
+        
+        // Priority 2: Heuristics - Check for source files in directory (shallow)
+        try {
+            const entries = fs.readdirSync(filePath);
+            for (const entry of entries) {
+                if (entry.endsWith(".ts") && config.languages.typescript?.enabled) return "typescript";
+                if (entry.endsWith(".py") && config.languages.python?.enabled) return "python";
+                if (entry.endsWith(".vue") && config.languages.vue?.enabled) return "vue";
+            }
+        } catch { }
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  // 2. Fallback to extension check
   const ext = filePath.substring(filePath.lastIndexOf("."));
   
   for (const [lang, langConfig] of Object.entries(config.languages)) {

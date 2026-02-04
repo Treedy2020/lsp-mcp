@@ -544,8 +544,18 @@ function preRegisterTools(): void {
           };
         }
 
+        // Resolve path to absolute to help inference check file existence
+        let absPath = filePath;
+        if (!path.isAbsolute(filePath)) {
+            if (activeWorkspacePath) {
+                absPath = path.join(activeWorkspacePath, filePath);
+            } else {
+                absPath = path.resolve(filePath);
+            }
+        }
+
         // Infer language from path (now uses config)
-        const language = inferLanguageFromPath(filePath, config);
+        const language = inferLanguageFromPath(absPath, config);
         if (!language) {
           return {
             content: [
