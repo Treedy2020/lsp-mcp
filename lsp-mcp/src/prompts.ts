@@ -198,6 +198,18 @@ Analyze Python and TypeScript code for structure, types, and errors.
 
 ## Tools
 
+### project_structure
+
+Get a visual tree structure of the project, highlighting key files.
+
+\`\`\`
+project_structure(path=None)
+\`\`\`
+
+**Use when:**
+- Starting a new task to understand project layout
+- Finding entry points (main.py, package.json)
+
 ### symbols
 
 Extract all symbols (classes, functions, variables) from a file.
@@ -223,6 +235,18 @@ diagnostics(path)
 - Checking code for type errors after changes
 - Validating refactoring didn't break anything
 - Finding issues before running tests
+
+### git_diagnostics
+
+Check for errors ONLY in files changed in Git (working tree + staged).
+
+\`\`\`
+git_diagnostics()
+\`\`\`
+
+**Use when:**
+- Fast feedback loop after editing code
+- "Did I break anything I just touched?"
 
 ### search
 
@@ -457,7 +481,7 @@ export function registerPrompts(server: McpServer): void {
         text: `Please explore the project at '${path || "current workspace"}'.
 
 Recommended Workflow:
-1. List files to understand the directory structure (use 'ls' or 'glob').
+1. Use 'project_structure' to visualize the directory hierarchy and identify key files.
 2. Identify key entry points (e.g., main.py, index.ts, App.vue, pyproject.toml, package.json).
 3. Use 'summarize_file' on these entry points to extract high-level symbols (classes/functions) without reading full content.
 4. Report back with a structural summary of the project.`
@@ -479,7 +503,7 @@ Recommended Workflow:
         text: `Please debug and analyze the file '${file}'.
 
 Recommended Workflow:
-1. Run 'diagnostics' on the file to identify syntax errors, type mismatches, or unused imports.
+1. Run 'diagnostics' on the file (or 'git_diagnostics' to check recent changes) to identify syntax errors, type mismatches, or unused imports.
 2. Use 'read_file_with_hints' to read the content. This will reveal inferred types and parameter names, making it easier to spot logic errors.
 3. If errors are found, check specific locations with 'code_action' to see if auto-fixes (like 'Organize Imports') are available.
 4. Explain the findings and propose fixes.`
@@ -503,6 +527,8 @@ Recommended Workflow:
 ### 1. Smart Exploration
 Instead of reading raw code, use:
 \`\`\`
+project_structure() → See file hierarchy
+workspace_symbol("User") → Find where "User" class is
 summarize_file(file) → Get outline of classes/functions
 read_file_with_hints(file) → Read code with type/param annotations
 \`\`\`
@@ -510,14 +536,15 @@ read_file_with_hints(file) → Read code with type/param annotations
 ### 2. Search → LSP Tools
 \`\`\`
 search("ClassName") → get positions
+peek_definition(file, line, col) → See definition code immediately
 hover(file, line, column) → get type info
-definition(...) → jump to definition
 references(...) → find usages
 \`\`\`
 
 ### 3. Debug & Fix
 \`\`\`
-diagnostics(path) → Check for errors
+git_diagnostics() → Check errors in changed files
+diagnostics(path) → Check full path
 code_action(file, line, col) → Get quick fixes (e.g. Organize Imports)
 run_code_action(...) → Apply fix
 \`\`\`

@@ -18,6 +18,7 @@ import { z } from "zod";
 import { createRequire } from "module";
 import * as fs from "fs";
 import * as path from "path";
+import { execSync } from "child_process";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 
 import { loadConfig, inferLanguageFromPath, type PythonProvider, type Language } from "./config.js";
@@ -63,6 +64,135 @@ const server = new McpServer({
 // ============================================================================ 
 
 registerPrompts(server);
+
+// ============================================================================ 
+// Helper Functions for New Tools
+// ============================================================================ 
+
+/**
+ * Generate a visual tree structure of the project, focusing on code files.
+ */
+function getProjectStructure(dirPath: string, depth = 0, maxDepth = 3): string {
+  const IGNORED_DIRS = new Set([".git", "node_modules", "dist", "build", "coverage", "__pycache__", ".venv", ".idea", ".vscode", ".next", ".nuxt"]);
+  const KEY_FILES = new Set(["package.json", "tsconfig.json", "pyproject.toml", "requirements.txt", "README.md", "Dockerfile", "docker-compose.yml", "cargo.toml", "go.mod", "gemfile"]);
+  
+  if (depth > maxDepth) return "";
+
+  let output = "";
+  let entries: fs.Dirent[];
+
+  try {
+    entries = fs.readdirSync(dirPath, { withFileTypes: true });
+  } catch (e) {
+    return "";
+  }
+
+  // Sort: Directories first, then files
+  entries.sort((a, b) => {
+    if (a.isDirectory() && !b.isDirectory()) return -1;
+    if (!a.isDirectory() && b.isDirectory()) return 1;
+    return a.name.localeCompare(b.name);
+  });
+
+  for (const entry of entries) {
+    if (entry.name.startsWith(".")) continue; // Skip hidden files by default
+    if (IGNORED_DIRS.has(entry.name)) continue;
+
+    const isDir = entry.isDirectory();
+    const indent = "  ".repeat(depth);
+    const marker = isDir ? "📁 " : "📄 ";
+    const isKeyFile = KEY_FILES.has(entry.name.toLowerCase());
+    const extra = isKeyFile ? " (config)" : "";
+    
+    output += `${indent}${marker}${entry.name}${extra}\n`;
+
+    if (isDir) {
+       output += getProjectStructure(path.join(dirPath, entry.name), depth + 1, maxDepth);
+    }
+  }
+  
+  return output;
+}
+
+/**
+ * Get list of files changed in git (working tree + staged).
+ */
+function getGitChangedFiles(cwd: string): string[] {
+  try {
+    const gitRoot = execSync("git rev-parse --show-toplevel", { cwd, encoding: "utf-8", stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    const files = new Set<string>();
+    
+    // Working tree changes
+    try {
+        const stdout = execSync("git diff --name-only", { cwd, encoding: "utf-8", stdio: ['ignore', 'pipe', 'ignore'] });
+        stdout.split('\n').forEach(f => { if (f.trim()) files.add(path.resolve(gitRoot, f.trim())); });
+    } catch (e) { /* ignore */ }
+
+    // Staged changes
+    try {
+        const stdout = execSync("git diff --staged --name-only", { cwd, encoding: "utf-8", stdio: ['ignore', 'pipe', 'ignore'] });
+        stdout.split('\n').forEach(f => { if (f.trim()) files.add(path.resolve(gitRoot, f.trim())); });
+    } catch (e) { /* ignore */ }
+    
+    return Array.from(files);
+  } catch (error) {
+    return [];
+  }
+}
+
+/**
+ * Validate and fuzzy-fix line/column positions.
+ * Reads the file to ensure coordinates are within bounds.
+ */
+function validateAndFixPosition(filePath: string, line: number, column: number): { line: number, column: number, warning?: string } {
+    try {
+        if (!fs.existsSync(filePath)) return { line, column };
+        
+        // Don't read huge files for this check
+        const stats = fs.statSync(filePath);
+        if (stats.size > 1024 * 1024) return { line, column }; // Skip for > 1MB
+
+        const content = fs.readFileSync(filePath, 'utf-8');
+        const lines = content.split('\n');
+        
+        // 1-based line correction
+        let newLine = line;
+        let warning = "";
+        
+        if (newLine > lines.length) {
+            newLine = lines.length;
+            warning = `Line ${line} out of bounds (max ${lines.length}). Clamped to ${newLine}.`;
+        }
+        if (newLine < 1) {
+            newLine = 1;
+            warning = `Line ${line} must be positive. Clamped to 1.`;
+        }
+        
+        // 1-based column correction
+        // Get line content (0-based index)
+        const lineContent = lines[newLine - 1] || "";
+        let newColumn = column;
+        
+        // Allow column to be line length + 1 (end of line)
+        const maxCol = lineContent.length + 1;
+        
+        if (newColumn > maxCol) {
+            newColumn = maxCol;
+            const w = `Column ${column} out of bounds (max ${maxCol}). Clamped to ${newColumn}.`;
+            warning = warning ? `${warning} ${w}` : w;
+        }
+        if (newColumn < 1) {
+            newColumn = 1;
+            const w = `Column ${column} must be positive. Clamped to 1.`;
+            warning = warning ? `${warning} ${w}` : w;
+        }
+        
+        return { line: newLine, column: newColumn, warning: warning || undefined };
+    } catch (e) {
+        // Fallback if anything fails
+        return { line, column };
+    }
+}
 
 // ============================================================================ 
 // Dynamic Tool Registration Helpers
@@ -327,6 +457,10 @@ const UNIFIED_TOOLS: Array<{
   { name: "read_file_with_hints", description: "Read file content with inlay hints (type annotations, parameter names) inserted as comments. Useful for understanding complex code.", schema: { file: z.string() } },
   { name: "code_action", description: "Get available code actions (refactors and quick fixes) at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
   { name: "run_code_action", description: "Apply a code action (refactor or quick fix)", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive(), kind: z.enum(["refactor", "quickfix"]), name: z.string(), actionName: z.string().optional(), preview: z.boolean().default(false).optional() } },
+  { name: "workspace_symbol", description: "Search for a symbol (class, function, etc.) across the entire workspace. Returns locations that can be used with peek_definition.", schema: { query: z.string() } },
+  { name: "peek_definition", description: "Go to definition and return the surrounding code context immediately. Reduces round-trips compared to definition() + read_file().", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
+  { name: "project_structure", description: "Get a visual tree structure of the project to understand hierarchy and identify key files. Ignores build artifacts.", schema: { path: z.string().optional() } },
+  { name: "git_diagnostics", description: "Check for errors/warnings ONLY in files changed in Git (working tree + staged). Useful for checking your changes.", schema: { } },
 ];
 
 /**
@@ -510,12 +644,105 @@ function preRegisterTools(): void {
         inputSchema: tool.schema,
       },
       async (args) => {
+        // --- Smart Parameter Correction (Fuzzy Logic) ---
+        // Automatically fix out-of-bounds line/column numbers to prevent backend errors
+        let paramWarning: string | undefined;
+        if (typeof args.line === 'number' && typeof args.column === 'number') {
+             const targetFile = (args.file as string) || (args.path as string);
+             if (targetFile) {
+                 let checkPath = targetFile;
+                 if (!path.isAbsolute(checkPath) && activeWorkspacePath) {
+                     checkPath = path.join(activeWorkspacePath, checkPath);
+                 } else if (!path.isAbsolute(checkPath)) {
+                     checkPath = path.resolve(checkPath);
+                 }
+                 
+                 const fixed = validateAndFixPosition(checkPath, args.line, args.column);
+                 if (fixed.warning) {
+                     console.error(`[lsp-mcp] Auto-corrected params for ${tool.name}: ${fixed.warning}`);
+                     args.line = fixed.line;
+                     args.column = fixed.column;
+                     paramWarning = `(Auto-corrected: ${fixed.warning})`;
+                 }
+             }
+        }
+
+        // --- Special Tool: Project Structure ---
+        if (tool.name === "project_structure") {
+             const targetPath = (args.path as string) || activeWorkspacePath || process.cwd();
+             const tree = getProjectStructure(targetPath);
+             return {
+                 content: [{ type: "text", text: `Project Structure for ${targetPath}:\n\n${tree}` }]
+             };
+        }
+
+        // --- Special Tool: Git Diagnostics ---
+        if (tool.name === "git_diagnostics") {
+             const cwd = activeWorkspacePath || process.cwd();
+             const changedFiles = getGitChangedFiles(cwd);
+             
+             if (changedFiles.length === 0) {
+                 return { content: [{ type: "text", text: "No changed files found in git." }] };
+             }
+             
+             const results: string[] = [];
+             
+             // Group by language to batch start backends? No, just iterate.
+             for (const file of changedFiles) {
+                 const language = inferLanguageFromPath(file, config);
+                 if (!language) continue; // Skip unsupported files
+                 
+                 // Start backend if needed
+                 if (!startedBackends.has(language)) {
+                     try {
+                         await backendManager.getBackend(language);
+                         startedBackends.add(language);
+                     } catch (e) {
+                         results.push(`Could not check ${path.basename(file)}: Backend failed to start`);
+                         continue;
+                     }
+                 }
+                 
+                 try {
+                     const relativePath = path.relative(cwd, file);
+                     const res = await backendManager.callTool(language, "diagnostics", { path: relativePath });
+                     const parsed = JSON.parse(res.content[0].text);
+                     
+                     if (parsed.error) {
+                         results.push(`⚠️ ${path.basename(file)}: Backend error: ${parsed.error}`);
+                         continue;
+                     }
+
+                     let diagnostics = [];
+                     if (Array.isArray(parsed)) diagnostics = parsed;
+                     else if (parsed.diagnostics && Array.isArray(parsed.diagnostics)) diagnostics = parsed.diagnostics;
+                     else {
+                         console.error(`[lsp-mcp] Unexpected diagnostics format for ${file}:`, parsed);
+                         results.push(`⚠️ ${path.basename(file)}: Unexpected response format`);
+                         continue;
+                     }
+                     
+                     // Format output
+                     if (diagnostics.length === 0) {
+                         results.push(`✅ ${path.basename(file)}: No errors`);
+                     } else {
+                         const errors = diagnostics.map((d: any) => `  - [Line ${d.range?.start?.line ?? d.line ?? '?'}] ${d.message}`).join('\n');
+                         results.push(`❌ ${path.basename(file)}:\n${errors}`);
+                     }
+                 } catch (e) {
+                     results.push(`⚠️ ${path.basename(file)}: Check failed (${e})`);
+                 }
+             }
+             
+             return { content: [{ type: "text", text: `Git Diagnostics Report:\n\n${results.join('\n\n')}` }] };
+        }
+
         // Find the target path argument
         const filePath = (args.file as string) || (args.path as string);
         
         // Handle search without path (uses active workspace implicitly via backend logic)
         // Only implementing a simple "try all enabled" for global search
-        if (tool.name === "search" && !filePath) {
+        if ((tool.name === "search" || tool.name === "workspace_symbol") && !filePath) {
              const languages = Object.keys(config.languages).filter(
                (lang) => config.languages[lang].enabled
              );
@@ -523,19 +750,30 @@ function preRegisterTools(): void {
              for (const lang of languages) {
                  if (startedBackends.has(lang)) {
                      try {
-                         const res = await backendManager.callTool(lang, "search", args as Record<string, unknown>);
-                         results.push(JSON.parse(res.content[0].text));
+                         const res = await backendManager.callTool(lang, tool.name, args as Record<string, unknown>);
+                         const parsed = JSON.parse(res.content[0].text);
+                         // Handle both 'matches' (search) and direct array (workspace_symbol possible format)
+                         // But we expect standardized JSON from backends ideally.
+                         // Let's assume parsed is { matches: [...] } or just [...]
+                         let items = [];
+                         if (Array.isArray(parsed)) items = parsed;
+                         else if (parsed.matches) items = parsed.matches;
+                         else if (parsed.symbols) items = parsed.symbols; // Workspace symbol might return symbols
+                         
+                         if (items.length > 0) {
+                            // Tag them with language if not present
+                            results.push(...items.map((i: any) => ({ ...i, language: lang })));
+                         }
                      } catch (e) {
                          // ignore
                      }
                  }
              }
              if (results.length === 0) {
-                 return { content: [{ type: "text", text: JSON.stringify({ matches: [], count: 0, message: "No active backends to search in. Please specify a file path to auto-start a backend." }) }] };
+                 return { content: [{ type: "text", text: JSON.stringify({ matches: [], count: 0, message: "No matches found or no active backends." }) }] };
              }
-             // Aggregate results (simplified)
-             const allMatches = results.flatMap(r => r.matches || []);
-             return { content: [{ type: "text", text: JSON.stringify({ matches: allMatches, count: allMatches.length }) }] };
+             
+             return { content: [{ type: "text", text: JSON.stringify({ matches: results, count: results.length }) }] };
         }
 
         if (!filePath) {
@@ -608,7 +846,7 @@ function preRegisterTools(): void {
 
         // Capability Check: check if the backend actually supports this tool
         // Special case for composite tools like summarize_file (they use other tools internally)
-        if (tool.name !== "summarize_file" && tool.name !== "read_file_with_hints") {
+        if (tool.name !== "summarize_file" && tool.name !== "read_file_with_hints" && tool.name !== "peek_definition") {
           const availableTools = await backendManager.getTools(language);
           const supportsTool = availableTools.some(t => t.name === tool.name);
 
@@ -651,6 +889,88 @@ function preRegisterTools(): void {
           } catch (error) {
             return {
               content: [{ type: "text", text: JSON.stringify({ error: `Failed to summarize file: ${error}` }) }],
+            };
+          }
+        }
+        
+        // Special case for peek_definition
+        if (tool.name === "peek_definition") {
+          try {
+            // 1. Call definition tool
+            const result = await backendManager.callTool(language, "definition", args as Record<string, unknown>);
+            const parsed = JSON.parse(result.content[0].text);
+            
+            if (parsed.error) {
+               return { content: [{ type: "text", text: JSON.stringify(parsed) }] };
+            }
+
+            // Definition can be array or single object
+            let locs = Array.isArray(parsed) ? parsed : [parsed];
+            if (parsed.matches) locs = parsed.matches; // Handle standardized matches format
+            
+            if (!locs || locs.length === 0) {
+                return { content: [{ type: "text", text: JSON.stringify({ message: "No definition found" }) }] };
+            }
+
+            // Take the first definition
+            const def = locs[0];
+            const defPath = def.file || def.uri; // Handle potential naming diffs
+            
+            if (!defPath) {
+                 return { content: [{ type: "text", text: JSON.stringify({ error: "Invalid definition result", raw: parsed }) }] };
+            }
+
+            let defAbsPath = defPath;
+            if (!path.isAbsolute(defPath) && activeWorkspacePath) {
+                 defAbsPath = path.join(activeWorkspacePath, defPath);
+            }
+            
+            if (!fs.existsSync(defAbsPath)) {
+                 return { content: [{ type: "text", text: JSON.stringify({ error: `Definition file not found: ${defAbsPath}`, location: def }) }] };
+            }
+
+            // 2. Read file context
+            const fileContent = fs.readFileSync(defAbsPath, 'utf-8');
+            const lines = fileContent.split('\n');
+            
+            // LSP lines are 0-based or 1-based?
+            // Usually internal LSP is 0-based, but our tools expose 1-based?
+            // src/tools/meta.ts says "line: z.number().int().positive()" -> 1-based input.
+            // But backends usually return standardized response.
+            // Let's assume the result from definition() is consistent with input: 1-based.
+            // If it returns raw LSP 0-based, we might be off by one.
+            // Let's assume 1-based for user-facing strings, checking definition return...
+            // If definition tool output mimics 'search', it has 'line'.
+            
+            // Let's assume 1-based target line for now, and clamp.
+            const targetLine = def.line; 
+            // 0-based index
+            const lineIdx = targetLine - 1; 
+            
+            const CONTEXT_LINES = 10;
+            const startIdx = Math.max(0, lineIdx - CONTEXT_LINES);
+            const endIdx = Math.min(lines.length, lineIdx + CONTEXT_LINES + 1);
+            
+            const contextSnippet = lines.slice(startIdx, endIdx)
+                .map((line, i) => {
+                    const currentLineNum = startIdx + i + 1;
+                    const marker = currentLineNum === targetLine ? " >" : "  ";
+                    return `${marker} ${currentLineNum.toString().padEnd(4)} | ${line}`;
+                })
+                .join('\n');
+                
+            const responseText = `Definition found in ${defPath} at line ${targetLine}:\n\n` +
+                                 "```" + (language === 'python' ? 'python' : 'typescript') + "\n" +
+                                 contextSnippet + "\n" +
+                                 "```";
+                                 
+            return {
+                content: [{ type: "text", text: responseText }]
+            };
+
+          } catch (error) {
+            return {
+              content: [{ type: "text", text: JSON.stringify({ error: `Failed to peek definition: ${error}` }) }],
             };
           }
         }
