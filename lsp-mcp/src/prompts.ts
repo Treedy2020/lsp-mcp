@@ -287,7 +287,19 @@ references(...) → Find all usages
 4. Repeat until clean
 \`\`\`
 
-### Pattern 3: Learn API Before Using
+### Pattern 3: Polyglot Projects (Mixed TS/Python)
+
+\`diagnostics(path)\` only checks ONE language at a time based on priority.
+
+\`\`\`
+1. Use git_diagnostics() FIRST (It handles mixed languages correctly).
+2. If full scan needed:
+   - diagnostics("backend/")  -> Checks Python
+   - diagnostics("frontend/") -> Checks TypeScript
+   - DO NOT run diagnostics(".") on root if mixed.
+\`\`\`
+
+### Pattern 4: Learn API Before Using
 
 \`\`\`
 1. search("ClassName") to find where API is defined

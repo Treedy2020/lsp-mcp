@@ -449,7 +449,7 @@ const UNIFIED_TOOLS: Array<{
   { name: "completions", description: "Get code completion suggestions at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive(), limit: z.number().int().positive().default(20).optional() } },
   { name: "signature_help", description: "Get function signature help at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
   { name: "symbols", description: "Extract symbols (classes, functions, methods, variables) from a file", schema: { file: z.string(), query: z.string().optional() } },
-  { name: "diagnostics", description: "Get type errors and warnings for a file or directory", schema: { path: z.string() } },
+  { name: "diagnostics", description: "Get type errors/warnings. NOTE: On mixed-language directories, it only checks the primary language (TS > Python). Prefer specific subdirectories or 'git_diagnostics'.", schema: { path: z.string() } },
   { name: "rename", description: "Preview renaming a symbol at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive(), newName: z.string() } },
   { name: "update_document", description: "Update file content for incremental analysis without writing to disk", schema: { file: z.string(), content: z.string() } },
   { name: "search", description: "Search for a pattern in files using ripgrep. Uses active workspace if path is omitted.", schema: { pattern: z.string(), path: z.string().optional(), glob: z.string().optional() } },
