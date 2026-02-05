@@ -232,13 +232,11 @@ export function inferLanguageFromPath(filePath: string, config: Config): Languag
     try {
       const stat = fs.statSync(filePath);
       if (stat.isDirectory()) {
-        // Priority 1: Config files
+        // Strategy A: Check for explicit config files in the CURRENT directory
         if (config.languages.typescript?.enabled && (
             fs.existsSync(path.join(filePath, "tsconfig.json")) || 
             fs.existsSync(path.join(filePath, "package.json"))
-        )) {
-            return "typescript";
-        }
+        )) return "typescript";
         
         if (config.languages.python?.enabled && (
             fs.existsSync(path.join(filePath, "pyproject.toml")) || 
@@ -246,18 +244,14 @@ export function inferLanguageFromPath(filePath: string, config: Config): Languag
             fs.existsSync(path.join(filePath, "setup.py")) ||
             fs.existsSync(path.join(filePath, "venv")) ||
             fs.existsSync(path.join(filePath, ".venv"))
-        )) {
-            return "python";
-        }
-        
+        )) return "python";
+
         if (config.languages.vue?.enabled && (
             fs.existsSync(path.join(filePath, "vite.config.ts")) ||
             fs.existsSync(path.join(filePath, "vue.config.js"))
-        )) {
-            return "vue"; // Vue often overlaps with TS, but explicit config might hint preference
-        }
-        
-        // Priority 2: Heuristics - Check for source files in directory (shallow)
+        )) return "vue";
+
+        // Strategy B: Check for source files in the CURRENT directory (Heuristic)
         try {
             const entries = fs.readdirSync(filePath);
             for (const entry of entries) {
@@ -266,6 +260,26 @@ export function inferLanguageFromPath(filePath: string, config: Config): Languag
                 if (entry.endsWith(".vue") && config.languages.vue?.enabled) return "vue";
             }
         } catch { }
+
+        // Strategy C: Walk up to find project root (Config files in PARENT directories)
+        // This handles running diagnostics on a subdirectory like 'src/utils'
+        let currentDir = path.dirname(filePath);
+        for (let i = 0; i < 5; i++) {
+            if (config.languages.typescript?.enabled && (
+                fs.existsSync(path.join(currentDir, "tsconfig.json")) || 
+                fs.existsSync(path.join(currentDir, "package.json"))
+            )) return "typescript";
+            
+            if (config.languages.python?.enabled && (
+                fs.existsSync(path.join(currentDir, "pyproject.toml")) || 
+                fs.existsSync(path.join(currentDir, "requirements.txt")) ||
+                fs.existsSync(path.join(currentDir, "setup.py"))
+            )) return "python";
+            
+            const parent = path.dirname(currentDir);
+            if (parent === currentDir) break; 
+            currentDir = parent;
+        }
       }
     } catch (e) {
       // ignore
