@@ -1,33 +1,12 @@
 # @treedy/lsp-mcp
 
-Unified MCP server aggregating multi-language LSP backends for code intelligence. One server provides Python and TypeScript code intelligence through namespaced tools.
+One MCP server for Python, TypeScript/JavaScript, and Vue code intelligence.
 
-## Features
+It pre-registers unified LSP tools (`hover`, `definition`, `diagnostics`, etc.), auto-detects language from file path, and auto-starts backends on first use.
 
-- **Unified Entry Point**: Single MCP server for multiple languages
-- **Namespaced Tools**: `python_hover`, `typescript_definition`, etc.
-- **On-Demand Loading**: Backends are installed and started only when needed
-- **Dynamic Tool Registration**: Backend tools are discovered automatically
-- **Skill Prompts**: Best practices exposed as MCP prompts for agents
-- **Graceful Degradation**: Clear error messages when backends unavailable
+## 60-Second Setup
 
-## Installation
-
-```bash
-npm install -g @treedy/lsp-mcp
-```
-
-Or use directly with npx:
-
-```bash
-npx @treedy/lsp-mcp
-```
-
-## Configuration
-
-### Claude Code / AI Client
-
-Add to your MCP configuration:
+1) Add to your MCP client config:
 
 ```json
 {
@@ -40,6 +19,82 @@ Add to your MCP configuration:
 }
 ```
 
+2) Try these first calls:
+
+```txt
+status
+list_backends
+hover file=/abs/path/to/file.py line=10 column=5
+diagnostics path=/abs/path/to/project
+git_diagnostics
+```
+
+`start_backend` is optional now. Backends are started automatically when a tool needs them.
+
+## What You Get
+
+- Unified tools across languages: `hover`, `definition`, `references`, `search`, `diagnostics`, `rename`, etc.
+- Language-specific refactor tools where needed:
+  - Python: `python_move`, `python_change_signature`, `python_function_signature`
+  - TypeScript: `typescript_move`, `typescript_function_signature`
+- Meta/admin tools: `status`, `list_backends`, `check_versions`, `update_backend`, `reload_config`, `switch_workspace`
+- Meta/admin tools: `status`, `list_backends`, `check_versions`, `update_backend`, `reload_config`, `switch_workspace`, `doctor`, `expand_result`
+- Built-in prompts for agent workflows and best practices
+
+## Tool Model (Current)
+
+### Unified tools (preferred)
+
+Use these directly; language is inferred from file/path:
+
+- Navigation: `hover`, `definition`, `references`, `peek_definition`, `workspace_symbol`
+- Editing support: `completions`, `signature_help`, `rename`, `code_action`, `run_code_action`
+- Analysis: `diagnostics`, `git_diagnostics`, `symbols`, `search`, `summarize_file`, `read_file_with_hints`, `project_structure`
+- Sync/edit loop: `update_document`
+
+Compatibility aliases are also available for older clients, for example:
+`python_hover`, `typescript_definition`, `python_diagnostics`.
+
+### High-volume output controls
+
+For large repos, use preview arguments to reduce token usage:
+
+- `search` / `workspace_symbol`: `preview_limit` or `page_size` (default `200`), plus `cursor` for next page
+- `diagnostics`: `preview_limit` or `page_size` (default `200`), `summary_only` (default `false`), plus `cursor`
+- `doctor`: `page_size` (default `50`) plus `cursor` for long environment reports
+- `project_structure`: `max_depth` (default `3`), `max_entries` (default `300`)
+- `summarize_file`: `max_symbols` (default `200`)
+- `read_file_with_hints`: `start_line` (default `1`), `max_lines` (default `300`)
+- `project_structure` / `summarize_file` / `read_file_with_hints`: also support `page_size` + `cursor`
+
+Paged responses include:
+- `page`: `{ shown, offset, page_size, has_more, next_cursor }`
+- `next`: ready-to-call arguments for the next page (via `expand_result`)
+- Cursors are signed and expire automatically (TTL-based) for safer paging.
+
+### Language-specific tools
+
+- Python-only: `python_move`, `python_change_signature`, `python_function_signature`
+- TypeScript-only: `typescript_move`, `typescript_function_signature`
+
+### Server/meta tools
+
+- `status`, `list_backends`, `start_backend`, `update_backend`, `check_versions`, `reload_config`, `switch_python_backend`, `switch_workspace`
+
+## Prompts (Skills)
+
+- `code-navigation`
+- `refactoring`
+- `code-analysis`
+- `lsp-rules`
+- `explore-project`
+- `debug-file`
+- `lsp-quick-start`
+
+## Configuration
+
+You can configure with env vars or `.lsp-mcp.json` in your workspace.
+
 ### Environment Variables
 
 | Variable | Default | Description |
@@ -47,252 +102,48 @@ Add to your MCP configuration:
 | `LSP_MCP_PYTHON_ENABLED` | `true` | Enable Python backend |
 | `LSP_MCP_PYTHON_PROVIDER` | `python-lsp-mcp` | Python provider (`python-lsp-mcp` or `pyright-mcp`) |
 | `LSP_MCP_TYPESCRIPT_ENABLED` | `true` | Enable TypeScript backend |
-| `LSP_MCP_AUTO_UPDATE` | `true` | Automatically update backends to latest versions on startup |
+| `LSP_MCP_VUE_ENABLED` | `true` | Enable Vue backend |
+| `LSP_MCP_AUTO_UPDATE` | `true` | Update backend packages to latest on startup/update |
+| `LSP_MCP_EAGER_START` | `false` | Start all enabled backends when server boots |
+| `LSP_MCP_IDLE_TIMEOUT` | `600` | Backend idle timeout in seconds |
 
-### Auto-Update Behavior
+### Auto-update behavior
 
-When `LSP_MCP_AUTO_UPDATE=true` (default), backends are automatically updated on startup:
+When `LSP_MCP_AUTO_UPDATE=true`:
 
-| Backend | Registry | Update Command |
-|---------|----------|----------------|
-| python-lsp-mcp (Rope) | PyPI | `uvx --upgrade python-lsp-mcp` |
-| pyright-mcp | npm | `npx --yes @treedy/pyright-mcp@latest` |
-| typescript-lsp-mcp | npm | `npx --yes @treedy/typescript-lsp-mcp@latest` |
+- `python-lsp-mcp` via `uvx --upgrade python-lsp-mcp`
+- `pyright-mcp` via `npx --yes @treedy/pyright-mcp@latest`
+- `typescript-lsp-mcp` via `npx --yes @treedy/typescript-lsp-mcp@latest`
+- `vue-lsp-mcp` via `npx --yes @treedy/vue-lsp-mcp@latest`
 
-This ensures backends are always up-to-date when the server starts. To disable auto-update and use cached versions, set `LSP_MCP_AUTO_UPDATE=false`.
+## Better Out-of-Box Experience (Recommended)
 
-## Available Tools
-
-### Common Tools (both languages)
-
-| Tool | Description |
-|------|-------------|
-| `{lang}_hover` | Get type information and documentation |
-| `{lang}_definition` | Go to definition |
-| `{lang}_references` | Find all references |
-| `{lang}_completions` | Code completion suggestions |
-| `{lang}_diagnostics` | Type errors and warnings |
-| `{lang}_symbols` | Extract symbols from file |
-| `{lang}_rename` | Rename symbol |
-| `{lang}_search` | Regex pattern search |
-| `{lang}_signature_help` | Function signature help |
-| `{lang}_update_document` | Update file for incremental analysis |
-| `{lang}_status` | Backend status |
-
-Replace `{lang}` with `python` or `typescript`.
-
-### Python-Only Tools
-
-| Tool | Description |
-|------|-------------|
-| `python_move` | Move function/class to another module |
-| `python_change_signature` | Modify function signature |
-| `python_function_signature` | Get current function signature |
-| `python_set_backend` | Switch between rope/pyright |
-| `python_set_python_path` | Set Python interpreter |
-
-### Meta Tools
-
-| Tool | Description |
-|------|-------------|
-| `list_backends` | List available backends and their status |
-| `start_backend` | Install and start a backend (downloads if needed) |
-| `update_backend` | Update a backend to the latest version |
-| `status` | Overall server and backend status with versions |
-| `check_versions` | Detailed version info for server and all backends |
-| `switch_python_backend` | Switch Python provider |
-
-## Quick Start
-
-1. **List available backends**:
-   ```
-   list_backends
-   ```
-
-2. **Start a backend** (this will download and install if needed):
-   ```
-   start_backend language=python
-   start_backend language=typescript
-   ```
-
-3. **Use backend tools** (available after starting):
-   ```
-   python_hover file=/path/to/file.py line=10 column=5
-   typescript_definition file=/path/to/file.ts line=15 column=10
-   ```
-
-4. **Update a backend** (when new version is available):
-   ```
-   update_backend language=python
-   ```
-
-## Available Prompts (Skills)
-
-The server exposes skill documentation as MCP prompts that agents can request:
-
-| Prompt | Description |
-|--------|-------------|
-| `code-navigation` | Navigate codebases using hover, definition, references |
-| `refactoring` | Safe cross-file refactoring (rename, move, change_signature) |
-| `code-analysis` | Code analysis techniques (symbols, diagnostics, search) |
-| `lsp-rules` | Best practices for using LSP tools effectively |
-| `lsp-quick-start` | Quick reference guide for essential workflows |
-
-### Key Workflows from Prompts
-
-**1. Search → LSP Tools**
-```
-search("ClassName") → get positions
-hover(file, line, column) → get type info
-definition(...) → jump to definition
-references(...) → find usages
-```
-
-**2. Learn API Before Using**
-```
-hover(file, line, column) → get documentation
-signature_help(...) → get parameter details
-→ Then write correct code
-```
-
-**3. Always Verify with Diagnostics**
-```
-Edit code
-diagnostics(path) → check for errors
-Fix issues
-Repeat until clean
-```
-
-## Usage Examples
-
-### Python Hover
-
-```json
-{
-  "name": "python_hover",
-  "arguments": {
-    "file": "/path/to/file.py",
-    "line": 10,
-    "column": 5
-  }
-}
-```
-
-### TypeScript Definition
-
-```json
-{
-  "name": "typescript_definition",
-  "arguments": {
-    "file": "/path/to/file.ts",
-    "line": 15,
-    "column": 10
-  }
-}
-```
-
-### Auto Language Detection
-
-If you don't use namespaced tools, the language is inferred from the file extension:
-
-```json
-{
-  "name": "hover",
-  "arguments": {
-    "file": "/path/to/file.py"
-  }
-}
-```
-
-This will automatically route to the Python backend.
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                      Claude Code / AI Client                     │
-└─────────────────────────────────────────────────────────────────┘
-                              │ MCP (stdio)
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                        @treedy/lsp-mcp                        │
-│                      (Unified MCP Server)                        │
-│                                                                  │
-│  ┌────────────────────────────────────────────────────────────┐ │
-│  │                    Tool Router                              │ │
-│  │  - Parse tool name (python_hover → {lang, tool})           │ │
-│  │  - Infer language from file extension                      │ │
-│  │  - Route to appropriate backend                            │ │
-│  └────────────────────────────────────────────────────────────┘ │
-│                              │                                   │
-│  ┌────────────────────────────────────────────────────────────┐ │
-│  │                  Backend Manager                            │ │
-│  │  - Lazy load backend processes                             │ │
-│  │  - Health check and auto-restart                           │ │
-│  │  - Graceful shutdown                                        │ │
-│  └────────────────────────────────────────────────────────────┘ │
-│         │                                      │                 │
-│         ▼                                      ▼                 │
-│  ┌────────────┐                        ┌────────────┐           │
-│  │  Python    │                        │ TypeScript │           │
-│  │  Backend   │                        │  Backend   │           │
-│  └────────────┘                        └────────────┘           │
-└─────────────────────────────────────────────────────────────────┘
-        │ MCP (stdio)                          │ MCP (stdio)
-        ▼                                      ▼
-┌──────────────┐                        ┌──────────────┐
-│python-lsp-mcp│                        │typescript-   │
-│ (subprocess) │                        │ lsp-mcp      │
-└──────────────┘                        └──────────────┘
-```
+- Use absolute file paths for the first calls to avoid inference edge cases.
+- Call `switch_workspace path=/abs/project/root` once per session for stable cross-file behavior.
+- For mixed-language repos, prefer `git_diagnostics` before broad `diagnostics path=.`
+- If startup speed matters, set `LSP_MCP_EAGER_START=true`.
 
 ## Development
 
 ```bash
-# Install dependencies
+# Install deps
 bun install
 
 # Build
 bun run build
 
-# Run in development mode
+# Run in watch mode
 bun run dev
 
-# Run tests
+# Core integration tests
 bun run test
 
-# Test with MCP Inspector
+# Prompt integration tests
+bun test test/integration/prompts.test.ts
+
+# Manual inspection
 bun run inspector
 ```
-
-### Local Development Mode
-
-For testing with local backend packages (not published to npm/PyPI):
-
-```bash
-# Set environment variable for local mode
-export LSP_MCP_LOCAL=1
-
-# Or set the project root explicitly
-export LSP_MCP_ROOT=/path/to/PyLspMcp
-
-# Then run the server
-bun dist/index.js
-```
-
-In local mode, backends are started from:
-- Python (pyright-mcp): `{root}/backends/python/pyright-mcp/dist/index.js`
-- Python (python-lsp-mcp): `{root}/backends/python/python-lsp-mcp` via `uv run`
-- TypeScript: `{root}/backends/typescript/typescript-lsp-mcp/dist/index.js`
-
-## Dependencies
-
-The unified server requires the backend packages to be available:
-
-- **Python**: `python-lsp-mcp` (via uvx) or `@treedy/pyright-mcp` (via npx)
-- **TypeScript**: `@treedy/typescript-lsp-mcp` (via npx)
-
-These are installed automatically when the respective backends are first used.
 
 ## License
 

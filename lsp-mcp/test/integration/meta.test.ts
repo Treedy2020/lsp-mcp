@@ -30,4 +30,36 @@ describe("Meta Tools", () => {
     expect(result.version).toBeDefined();
     expect(result.config).toBeDefined();
   });
+
+  it("should expose legacy namespaced unified aliases", async () => {
+    const result = await client.request("tools/list", {});
+    const names = (result.tools || []).map((t: { name: string }) => t.name);
+
+    expect(names).toContain("python_hover");
+    expect(names).toContain("typescript_definition");
+    expect(names).toContain("expand_result");
+  });
+
+  it("should provide doctor diagnostics", async () => {
+    const result = await client.callTool("doctor", {});
+    expect(result.checks).toBeDefined();
+    expect(result.enabledLanguages).toBeDefined();
+    expect(Array.isArray(result.recommendations)).toBe(true);
+  });
+
+  it("should support doctor pagination via expand_result", async () => {
+    const first = await client.callTool("doctor", { page_size: 1 });
+    expect(first.page).toBeDefined();
+    expect(first.page.shown).toBe(1);
+    expect(first.next?.tool).toBe("expand_result");
+    expect(first.next?.arguments?.cursor).toBeDefined();
+
+    const second = await client.callTool("expand_result", {
+      cursor: first.next.arguments.cursor,
+      page_size: 1,
+    });
+    expect(second.tool).toBe("doctor");
+    expect(second.page.offset).toBe(1);
+    expect(Array.isArray(second.items)).toBe(true);
+  });
 });

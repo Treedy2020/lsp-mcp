@@ -14,6 +14,7 @@ This repo hosts a unified MCP server plus language-specific backends.
   - Build: `cd lsp-mcp && bun run build`
   - Dev watch: `cd lsp-mcp && bun --watch src/index.ts`
   - Tests: `cd lsp-mcp && bun run test`
+  - Prompt tests: `cd lsp-mcp && bun test test/integration/prompts.test.ts`
 - Python backend:
   - Tests: `cd backends/python/python-lsp-mcp && uv run pytest tests/ -v`
   - Run locally: `cd backends/python/python-lsp-mcp && uv run python-lsp-mcp`
@@ -35,6 +36,15 @@ This repo hosts a unified MCP server plus language-specific backends.
 - Pytest tests live in `backends/python/python-lsp-mcp/tests/`.
 - Bun tests live under each TS package’s `test/` folder.
 - No explicit coverage target is enforced; add tests for new tools or behavior changes.
+- For prompt changes, verify both `prompts/list` and `prompts/get` behavior (including prompt args interpolation).
+- Keep prompt assertions stable: check tool/workflow keywords and required sections, not full free-text equality.
+
+## MCP Prompt Optimization Notes
+- Prompt source of truth: `lsp-mcp/src/prompts.ts`.
+- Current prompt set includes: `code-navigation`, `refactoring`, `code-analysis`, `lsp-rules`, `explore-project`, `debug-file`, `lsp-quick-start`.
+- Prefer actionable workflows in prompts: search -> LSP navigation -> edit -> diagnostics.
+- Keep prompts aligned with actual tool names/capabilities; update docs/tests in the same PR when prompt names or arguments change.
+- For mixed-language projects, prioritize `git_diagnostics` guidance before full-path diagnostics to avoid single-language blind spots.
 
 ## Commit & Pull Request Guidelines
 - Commit messages are short, sentence-case statements (no scopes/prefixes), e.g., “Fix version reporting”.

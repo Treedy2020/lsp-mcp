@@ -403,7 +403,7 @@ export function getBackendCommand(
         return {
           enabled: true,
           command: "uv",
-          args: ["run", "--directory", bundledPath, "python-lsp-mcp"],
+          args: ["run", "--quiet", "--directory", bundledPath, "python-lsp-mcp"],
         };
       }
 
@@ -412,8 +412,8 @@ export function getBackendCommand(
         enabled: true,
         command: "uvx",
         args: autoUpdate
-          ? ["--upgrade", "python-lsp-mcp"]
-          : ["python-lsp-mcp"],
+          ? ["--quiet", "--upgrade", "python-lsp-mcp"]
+          : ["--quiet", "python-lsp-mcp"],
       };
     }
   } else if (language === "typescript") {

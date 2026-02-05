@@ -482,7 +482,7 @@ export function registerPrompts(server: McpServer): void {
   // Action: Explore Project
   server.registerPrompt("explore-project", {
     description: "Analyze the current project structure and key files using semantic summaries",
-    args: {
+    argsSchema: {
       path: z.string().optional().describe("Project root path (optional, defaults to active workspace)"),
     }
   }, async ({ path }) => ({
@@ -504,7 +504,7 @@ Recommended Workflow:
   // Action: Debug File
   server.registerPrompt("debug-file", {
     description: "Deeply analyze a file for errors using diagnostics and inlay hints",
-    args: {
+    argsSchema: {
       file: z.string().describe("Path to the file to debug"),
     }
   }, async ({ file }) => ({

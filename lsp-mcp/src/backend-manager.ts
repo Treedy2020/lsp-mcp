@@ -42,6 +42,7 @@ export class BackendManager {
   private startPromises: Map<Language, Promise<BackendState>> = new Map();
   private config: Config;
   private idleCheckInterval: NodeJS.Timer | null = null;
+  private isShuttingDown = false;
 
   constructor(config: Config) {
     this.config = config;
@@ -129,6 +130,7 @@ export class BackendManager {
    */
   private monitorBackend(language: Language, transport: StdioClientTransport): void {
     transport.onclose = async () => {
+      if (this.isShuttingDown) return;
       const state = this.backends.get(language);
       // If manually stopped, do nothing
       if (!state || state.status === "stopped") return;
@@ -140,6 +142,7 @@ export class BackendManager {
     };
 
     transport.onerror = async (error) => {
+      if (this.isShuttingDown) return;
       const state = this.backends.get(language);
       if (!state || state.status === "stopped") return;
 
@@ -375,6 +378,7 @@ export class BackendManager {
 
     try {
       console.error(`[BackendManager] Shutting down ${language}...`);
+      state.status = "stopped";
       await state.transport.close();
       await state.client.close();
     } catch (error) {
@@ -458,6 +462,7 @@ export class BackendManager {
     if (existing) {
       console.error(`[BackendManager] Stopping ${language} for update...`);
       try {
+        existing.status = "stopped";
         await existing.transport.close();
         await existing.client.close();
       } catch (error) {
@@ -480,6 +485,7 @@ export class BackendManager {
    */
   async shutdown(): Promise<void> {
     console.error("[BackendManager] Shutting down all backends...");
+    this.isShuttingDown = true;
 
     if (this.idleCheckInterval) {
       clearInterval(this.idleCheckInterval);
@@ -490,9 +496,9 @@ export class BackendManager {
       async ([lang, state]) => {
         try {
           console.error(`[BackendManager] Closing ${lang}...`);
+          state.status = "stopped";
           await state.transport.close();
           await state.client.close();
-          state.status = "stopped";
         } catch (error) {
           console.error(`[BackendManager] Error closing ${lang}:`, error);
         }

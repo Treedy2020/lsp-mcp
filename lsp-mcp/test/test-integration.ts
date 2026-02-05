@@ -5,12 +5,11 @@
  * Tests the tool routing and backend management functionality.
  */
 
-import { spawn } from "child_process";
 import * as path from "path";
 import * as fs from "fs";
 
 const PROJECT_ROOT = path.dirname(import.meta.dir);
-const TEST_FIXTURES = path.join(PROJECT_ROOT, "..", "test-fixtures");
+const TEST_FIXTURES = path.join(PROJECT_ROOT, ".tmp", "test-fixtures");
 
 // Ensure test fixtures exist
 const PYTHON_TEST_FILE = path.join(TEST_FIXTURES, "test_sample.py");
@@ -90,9 +89,12 @@ async function testConfig() {
 
   // Test loadConfig
   const config = loadConfig();
-  console.assert(config.python.enabled === true, "Python should be enabled by default");
   console.assert(
-    config.typescript.enabled === true,
+    config.languages.python?.enabled === true,
+    "Python should be enabled by default"
+  );
+  console.assert(
+    config.languages.typescript?.enabled === true,
     "TypeScript should be enabled by default"
   );
   console.log("  loadConfig: OK");
@@ -112,23 +114,23 @@ async function testConfig() {
 
   // Test inferLanguageFromPath
   console.assert(
-    inferLanguageFromPath("/test/file.py") === "python",
+    inferLanguageFromPath("/test/file.py", config) === "python",
     "Should infer Python from .py"
   );
   console.assert(
-    inferLanguageFromPath("/test/file.ts") === "typescript",
+    inferLanguageFromPath("/test/file.ts", config) === "typescript",
     "Should infer TypeScript from .ts"
   );
   console.assert(
-    inferLanguageFromPath("/test/file.tsx") === "typescript",
+    inferLanguageFromPath("/test/file.tsx", config) === "typescript",
     "Should infer TypeScript from .tsx"
   );
   console.assert(
-    inferLanguageFromPath("/test/file.js") === "typescript",
+    inferLanguageFromPath("/test/file.js", config) === "typescript",
     "Should infer TypeScript from .js"
   );
   console.assert(
-    inferLanguageFromPath("/test/file.unknown") === null,
+    inferLanguageFromPath("/test/file.unknown", config) === null,
     "Should return null for unknown extension"
   );
   console.log("  inferLanguageFromPath: OK");

@@ -18,7 +18,8 @@ import { z } from "zod";
 import { createRequire } from "module";
 import * as fs from "fs";
 import * as path from "path";
-import { execSync } from "child_process";
+import { execSync, spawnSync } from "child_process";
+import { createHash, randomBytes } from "crypto";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 
 import { loadConfig, inferLanguageFromPath, type PythonProvider, type Language } from "./config.js";
@@ -52,6 +53,11 @@ const startedBackends = new Set<Language>();
 const registeredTools = new Set<string>();
 // Global active workspace path
 let activeWorkspacePath: string | null = null;
+// Cursor storage for paged high-volume responses
+const cursorStore = new Map<string, { tool: string; items: any[]; createdAt: number; expiresAt: number; summary?: any; count?: number }>();
+const CURSOR_TTL_MS = 10 * 60 * 1000;
+const CURSOR_MAX_ENTRIES = 100;
+const CURSOR_SECRET = randomBytes(16).toString("hex");
 
 // Create MCP server
 const server = new McpServer({
@@ -72,46 +78,65 @@ registerPrompts(server);
 /**
  * Generate a visual tree structure of the project, focusing on code files.
  */
-function getProjectStructure(dirPath: string, depth = 0, maxDepth = 3): string {
+function getProjectStructure(
+  dirPath: string,
+  maxDepth = 3,
+  maxEntries = 300
+): { tree: string; shownEntries: number; truncated: boolean } {
   const IGNORED_DIRS = new Set([".git", "node_modules", "dist", "build", "coverage", "__pycache__", ".venv", ".idea", ".vscode", ".next", ".nuxt"]);
   const KEY_FILES = new Set(["package.json", "tsconfig.json", "pyproject.toml", "requirements.txt", "README.md", "Dockerfile", "docker-compose.yml", "cargo.toml", "go.mod", "gemfile"]);
-  
-  if (depth > maxDepth) return "";
+  let shownEntries = 0;
+  let truncated = false;
 
-  let output = "";
-  let entries: fs.Dirent[];
+  const walk = (currentPath: string, depth: number): string => {
+    if (depth > maxDepth || truncated) return "";
 
-  try {
-    entries = fs.readdirSync(dirPath, { withFileTypes: true });
-  } catch (e) {
-    return "";
-  }
+    let output = "";
+    let entries: fs.Dirent[];
 
-  // Sort: Directories first, then files
-  entries.sort((a, b) => {
-    if (a.isDirectory() && !b.isDirectory()) return -1;
-    if (!a.isDirectory() && b.isDirectory()) return 1;
-    return a.name.localeCompare(b.name);
-  });
-
-  for (const entry of entries) {
-    if (entry.name.startsWith(".")) continue; // Skip hidden files by default
-    if (IGNORED_DIRS.has(entry.name)) continue;
-
-    const isDir = entry.isDirectory();
-    const indent = "  ".repeat(depth);
-    const marker = isDir ? "📁 " : "📄 ";
-    const isKeyFile = KEY_FILES.has(entry.name.toLowerCase());
-    const extra = isKeyFile ? " (config)" : "";
-    
-    output += `${indent}${marker}${entry.name}${extra}\n`;
-
-    if (isDir) {
-       output += getProjectStructure(path.join(dirPath, entry.name), depth + 1, maxDepth);
+    try {
+      entries = fs.readdirSync(currentPath, { withFileTypes: true });
+    } catch {
+      return "";
     }
-  }
-  
-  return output;
+
+    // Sort: Directories first, then files
+    entries.sort((a, b) => {
+      if (a.isDirectory() && !b.isDirectory()) return -1;
+      if (!a.isDirectory() && b.isDirectory()) return 1;
+      return a.name.localeCompare(b.name);
+    });
+
+    for (const entry of entries) {
+      if (entry.name.startsWith(".")) continue; // Skip hidden files by default
+      if (IGNORED_DIRS.has(entry.name)) continue;
+      if (shownEntries >= maxEntries) {
+        truncated = true;
+        break;
+      }
+
+      shownEntries++;
+      const isDir = entry.isDirectory();
+      const indent = "  ".repeat(depth);
+      const marker = isDir ? "📁 " : "📄 ";
+      const isKeyFile = KEY_FILES.has(entry.name.toLowerCase());
+      const extra = isKeyFile ? " (config)" : "";
+
+      output += `${indent}${marker}${entry.name}${extra}\n`;
+
+      if (isDir) {
+        output += walk(path.join(currentPath, entry.name), depth + 1);
+      }
+    }
+
+    return output;
+  };
+
+  return {
+    tree: walk(dirPath, 0),
+    shownEntries,
+    truncated,
+  };
 }
 
 /**
@@ -386,6 +411,192 @@ server.registerTool(
 );
 
 server.registerTool(
+  "doctor",
+  {
+    description: "Run environment and backend readiness checks for out-of-box troubleshooting.",
+    inputSchema: {
+      probe_backends: z.boolean().default(false).optional(),
+      page_size: z.number().int().positive().default(50).optional(),
+      cursor: z.string().optional(),
+    },
+  },
+  async ({ probe_backends, page_size, cursor }) => {
+    const pageSize = typeof page_size === "number" ? page_size : 50;
+    if (typeof cursor === "string") {
+      const page = readCursorPage("doctor", cursor, pageSize);
+      if (!page.ok) {
+        return {
+          content: [{ type: "text", text: JSON.stringify(page.data) }],
+        };
+      }
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            items: page.data.items,
+            count: page.data.count,
+            summary: page.data.summary,
+            page: page.data.page,
+            next: page.data.page.has_more
+              ? { tool: "expand_result", arguments: { cursor: page.data.page.next_cursor, page_size: pageSize } }
+              : null,
+          }),
+        }],
+      };
+    }
+
+    const checkCommand = (command: string, versionArgs = ["--version"]) => {
+      try {
+        const out = spawnSync(command, versionArgs, {
+          encoding: "utf-8",
+          timeout: 3000,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        return {
+          available: out.status === 0,
+          code: out.status,
+          output: (out.stdout || out.stderr || "").trim().split("\n")[0],
+        };
+      } catch (error) {
+        return {
+          available: false,
+          code: -1,
+          output: String(error),
+        };
+      }
+    };
+
+    const checks = {
+      node: checkCommand("node"),
+      npx: checkCommand("npx"),
+      uv: checkCommand("uv"),
+      bun: checkCommand("bun"),
+    };
+
+    const enabledLanguages = Object.keys(config.languages).filter((lang) => config.languages[lang]?.enabled);
+    const backendCommands = Object.fromEntries(
+      enabledLanguages.map((lang) => {
+        const cmd = backendManager.getVersions().find((v) => v.language === lang)?.command ?? "not configured";
+        return [lang, cmd];
+      })
+    );
+
+    const probeResults: Record<string, any> = {};
+    if (probe_backends) {
+      for (const lang of enabledLanguages) {
+        try {
+          await backendManager.getBackend(lang);
+          startedBackends.add(lang);
+          probeResults[lang] = { ok: true };
+        } catch (error) {
+          probeResults[lang] = { ok: false, error: String(error) };
+        }
+      }
+    }
+
+    const recommendations: string[] = [];
+    if (!checks.node.available) recommendations.push("Install Node.js and ensure `node` is in PATH.");
+    if (!checks.npx.available) recommendations.push("Ensure npm/npx is available in PATH.");
+    if (!checks.uv.available && config.languages.python?.enabled) recommendations.push("Install uv for Python backend support.");
+    if (!checks.bun.available) recommendations.push("Install Bun if you run this server from source.");
+
+    const result = {
+      ok: recommendations.length === 0,
+      checks,
+      activeWorkspacePath,
+      enabledLanguages,
+      backendCommands,
+      probe_backends: !!probe_backends,
+      probeResults: probe_backends ? probeResults : undefined,
+      recommendations,
+    };
+
+    const items: Array<{ kind: string; key: string; value: unknown }> = [];
+    for (const [name, check] of Object.entries(checks)) {
+      items.push({ kind: "runtime_check", key: name, value: check });
+    }
+    for (const [lang, command] of Object.entries(backendCommands)) {
+      items.push({ kind: "backend_command", key: lang, value: command });
+    }
+    for (const [lang, probe] of Object.entries(probeResults)) {
+      items.push({ kind: "backend_probe", key: lang, value: probe });
+    }
+    recommendations.forEach((rec, idx) => {
+      items.push({ kind: "recommendation", key: `r${idx + 1}`, value: rec });
+    });
+
+    const doctorSummary = {
+      ok: result.ok,
+      activeWorkspacePath,
+      enabledLanguages,
+      recommendations_count: recommendations.length,
+      item_count: items.length,
+    };
+    const doctorCursor = makeCursor("doctor", items, items.length, doctorSummary);
+    const firstPage = readCursorPage("doctor", doctorCursor, pageSize);
+    if (!firstPage.ok) {
+      return {
+        content: [{ type: "text", text: JSON.stringify(firstPage.data) }],
+      };
+    }
+
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          ...result,
+          items: firstPage.data.items,
+          page: firstPage.data.page,
+          next: firstPage.data.page.has_more
+            ? { tool: "expand_result", arguments: { cursor: firstPage.data.page.next_cursor, page_size: pageSize } }
+            : null,
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+server.registerTool(
+  "expand_result",
+  {
+    description: "Fetch the next page for a previously paged response using its cursor.",
+    inputSchema: {
+      cursor: z.string().describe("Cursor returned by a previous paged response"),
+      page_size: z.number().int().positive().default(200).optional(),
+    },
+  },
+  async ({ cursor, page_size }) => {
+    const pageSize = typeof page_size === "number" ? page_size : 200;
+    const page = readCursorPageAny(cursor, pageSize);
+    if (!page.ok) {
+      return {
+        content: [{ type: "text", text: JSON.stringify(page.data) }],
+      };
+    }
+
+    const payload: Record<string, unknown> = {
+      tool: page.tool,
+      items: page.data.items,
+      count: page.data.count,
+      summary: page.data.summary,
+      page: page.data.page,
+      next: page.data.page.has_more
+        ? { tool: "expand_result", arguments: { cursor: page.data.page.next_cursor, page_size: pageSize } }
+        : null,
+    };
+    if (page.tool === "diagnostics") payload.diagnostics = page.data.items;
+    if (page.tool === "search" || page.tool === "workspace_symbol") payload.matches = page.data.items;
+    if (page.tool === "project_structure" || page.tool === "summarize_file" || page.tool === "read_file_with_hints") {
+      payload.lines = page.data.items;
+    }
+
+    return {
+      content: [{ type: "text", text: JSON.stringify(payload) }],
+    };
+  }
+);
+
+server.registerTool(
   "switch_python_backend",
   {
     description: "Switch the Python backend provider (requires restart)",
@@ -449,17 +660,17 @@ const UNIFIED_TOOLS: Array<{
   { name: "completions", description: "Get code completion suggestions at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive(), limit: z.number().int().positive().default(20).optional() } },
   { name: "signature_help", description: "Get function signature help at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
   { name: "symbols", description: "Extract symbols (classes, functions, methods, variables) from a file", schema: { file: z.string(), query: z.string().optional() } },
-  { name: "diagnostics", description: "Get type errors/warnings. NOTE: On mixed-language directories, it only checks the primary language (TS > Python). Prefer specific subdirectories or 'git_diagnostics'.", schema: { path: z.string() } },
+  { name: "diagnostics", description: "Get type errors/warnings. NOTE: On mixed-language directories, it only checks the primary language (TS > Python). Prefer specific subdirectories or 'git_diagnostics'.", schema: { path: z.string().optional(), preview_limit: z.number().int().positive().default(200).optional(), page_size: z.number().int().positive().default(200).optional(), cursor: z.string().optional(), summary_only: z.boolean().default(false).optional() } },
   { name: "rename", description: "Preview renaming a symbol at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive(), newName: z.string() } },
   { name: "update_document", description: "Update file content for incremental analysis without writing to disk", schema: { file: z.string(), content: z.string() } },
-  { name: "search", description: "Search for a pattern in files using ripgrep. Uses active workspace if path is omitted.", schema: { pattern: z.string(), path: z.string().optional(), glob: z.string().optional() } },
-  { name: "summarize_file", description: "Get a high-level outline of a file (classes, functions, methods) to understand its structure without reading the full content.", schema: { file: z.string() } },
-  { name: "read_file_with_hints", description: "Read file content with inlay hints (type annotations, parameter names) inserted as comments. Useful for understanding complex code.", schema: { file: z.string() } },
+  { name: "search", description: "Search for a pattern in files using ripgrep. Uses active workspace if path is omitted.", schema: { pattern: z.string().optional(), path: z.string().optional(), glob: z.string().optional(), preview_limit: z.number().int().positive().default(200).optional(), page_size: z.number().int().positive().default(200).optional(), cursor: z.string().optional() } },
+  { name: "summarize_file", description: "Get a high-level outline of a file (classes, functions, methods) to understand its structure without reading the full content.", schema: { file: z.string(), max_symbols: z.number().int().positive().default(200).optional(), page_size: z.number().int().positive().default(200).optional(), cursor: z.string().optional() } },
+  { name: "read_file_with_hints", description: "Read file content with inlay hints (type annotations, parameter names) inserted as comments. Useful for understanding complex code.", schema: { file: z.string(), start_line: z.number().int().positive().default(1).optional(), max_lines: z.number().int().positive().default(300).optional(), page_size: z.number().int().positive().default(200).optional(), cursor: z.string().optional() } },
   { name: "code_action", description: "Get available code actions (refactors and quick fixes) at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
   { name: "run_code_action", description: "Apply a code action (refactor or quick fix)", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive(), kind: z.enum(["refactor", "quickfix"]), name: z.string(), actionName: z.string().optional(), preview: z.boolean().default(false).optional() } },
-  { name: "workspace_symbol", description: "Search for a symbol (class, function, etc.) across the entire workspace. Returns locations that can be used with peek_definition.", schema: { query: z.string() } },
+  { name: "workspace_symbol", description: "Search for a symbol (class, function, etc.) across the entire workspace. Returns locations that can be used with peek_definition.", schema: { query: z.string().optional(), preview_limit: z.number().int().positive().default(200).optional(), page_size: z.number().int().positive().default(200).optional(), cursor: z.string().optional() } },
   { name: "peek_definition", description: "Go to definition and return the surrounding code context immediately. Reduces round-trips compared to definition() + read_file().", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
-  { name: "project_structure", description: "Get a visual tree structure of the project to understand hierarchy and identify key files. Ignores build artifacts.", schema: { path: z.string().optional() } },
+  { name: "project_structure", description: "Get a visual tree structure of the project to understand hierarchy and identify key files. Ignores build artifacts.", schema: { path: z.string().optional(), max_depth: z.number().int().positive().max(10).default(3).optional(), max_entries: z.number().int().positive().default(300).optional(), page_size: z.number().int().positive().default(200).optional(), cursor: z.string().optional() } },
   { name: "git_diagnostics", description: "Check for errors/warnings ONLY in files changed in Git (working tree + staged). Useful for checking your changes.", schema: { } },
 ];
 
@@ -556,6 +767,114 @@ function formatSymbolsToMarkdown(symbols: any[], depth = 0): string {
   return output;
 }
 
+function cleanupCursors(): void {
+  const now = Date.now();
+  for (const [key, value] of cursorStore.entries()) {
+    if (now >= value.expiresAt || now - value.createdAt > CURSOR_TTL_MS) {
+      cursorStore.delete(key);
+    }
+  }
+
+  if (cursorStore.size > CURSOR_MAX_ENTRIES) {
+    const sorted = Array.from(cursorStore.entries()).sort((a, b) => a[1].createdAt - b[1].createdAt);
+    const over = cursorStore.size - CURSOR_MAX_ENTRIES;
+    for (let i = 0; i < over; i++) {
+      cursorStore.delete(sorted[i][0]);
+    }
+  }
+}
+
+function signCursorBase(base: string): string {
+  return createHash("sha256").update(`${base}:${CURSOR_SECRET}`).digest("hex").slice(0, 12);
+}
+
+function parseCursor(cursor: string): { baseCursor: string; offset: number; valid: boolean } {
+  const offsetMatch = /:o(\d+)$/.exec(cursor);
+  const offset = offsetMatch ? parseInt(offsetMatch[1], 10) : 0;
+  const baseCursor = cursor.replace(/:o\d+$/, ":o0");
+  const sigMatch = /:s([a-f0-9]{12}):o0$/.exec(baseCursor);
+  if (!sigMatch) {
+    return { baseCursor, offset, valid: false };
+  }
+  const signedPart = baseCursor.replace(/:s[a-f0-9]{12}:o0$/, "");
+  const expected = signCursorBase(signedPart);
+  return { baseCursor, offset, valid: expected === sigMatch[1] };
+}
+
+function makeCursor(tool: string, items: any[], count?: number, summary?: any): string {
+  cleanupCursors();
+  const createdAt = Date.now();
+  const unsignedBase = `${tool}:${createdAt.toString(36)}:${Math.random().toString(36).slice(2, 10)}`;
+  const sig = signCursorBase(unsignedBase);
+  const token = `${unsignedBase}:s${sig}:o0`;
+  cursorStore.set(token, {
+    tool,
+    items,
+    createdAt,
+    expiresAt: createdAt + CURSOR_TTL_MS,
+    count,
+    summary,
+  });
+  return token;
+}
+
+function readCursorPage(tool: string, cursor: string, pageSize: number): { ok: true; data: any } | { ok: false; data: any } {
+  cleanupCursors();
+  const parsed = parseCursor(cursor);
+  if (!parsed.valid) {
+    return { ok: false, data: { error: "Invalid cursor signature" } };
+  }
+  const baseCursor = parsed.baseCursor;
+  const entry = cursorStore.get(baseCursor);
+  if (!entry || entry.tool !== tool) {
+    return { ok: false, data: { error: "Invalid or expired cursor" } };
+  }
+  if (Date.now() >= entry.expiresAt) {
+    cursorStore.delete(baseCursor);
+    return { ok: false, data: { error: "Cursor expired", expires_at: entry.expiresAt } };
+  }
+
+  const offset = parsed.offset;
+  const pageItems = entry.items.slice(offset, offset + pageSize);
+  const nextOffset = offset + pageItems.length;
+  const hasMore = nextOffset < entry.items.length;
+
+  return {
+    ok: true,
+    data: {
+      items: pageItems,
+      count: entry.count ?? entry.items.length,
+      summary: entry.summary,
+      page: {
+        shown: pageItems.length,
+        offset,
+        page_size: pageSize,
+        has_more: hasMore,
+        next_cursor: hasMore ? `${baseCursor.replace(/:o0$/, "")}:o${nextOffset}` : null,
+        expires_at: entry.expiresAt,
+      },
+    },
+  };
+}
+
+function readCursorPageAny(cursor: string, pageSize: number): { ok: true; tool: string; data: any } | { ok: false; data: any } {
+  cleanupCursors();
+  const parsed = parseCursor(cursor);
+  if (!parsed.valid) {
+    return { ok: false, data: { error: "Invalid cursor signature" } };
+  }
+  const baseCursor = parsed.baseCursor;
+  const entry = cursorStore.get(baseCursor);
+  if (!entry) {
+    return { ok: false, data: { error: "Invalid or expired cursor" } };
+  }
+  const page = readCursorPage(entry.tool, cursor, pageSize);
+  if (!page.ok) {
+    return page;
+  }
+  return { ok: true, tool: entry.tool, data: page.data };
+}
+
 /**
  * Language-specific tools that are not part of the unified set.
  * These will be registered with a prefix (e.g., python_move).
@@ -576,6 +895,23 @@ const LANGUAGE_SPECIFIC_TOOLS: Record<Language, Array<{
   ],
   vue: [],
 };
+
+/**
+ * Backward-compatible namespaced aliases for unified tools.
+ * Example: python_hover -> hover
+ */
+const LEGACY_NAMESPACED_UNIFIED_TOOL_NAMES = new Set([
+  "hover",
+  "definition",
+  "references",
+  "completions",
+  "diagnostics",
+  "symbols",
+  "rename",
+  "search",
+  "signature_help",
+  "update_document",
+]);
 
 // ============================================================================ 
 // Global Workspace Tool
@@ -670,9 +1006,43 @@ function preRegisterTools(): void {
         // --- Special Tool: Project Structure ---
         if (tool.name === "project_structure") {
              const targetPath = (args.path as string) || activeWorkspacePath || process.cwd();
-             const tree = getProjectStructure(targetPath);
+             const maxDepth = typeof args.max_depth === "number" ? args.max_depth : 3;
+             const maxEntries = typeof args.max_entries === "number" ? args.max_entries : 300;
+             const pageSize = typeof args.page_size === "number" ? args.page_size : 200;
+             const { tree, shownEntries, truncated } = getProjectStructure(targetPath, maxDepth, maxEntries);
+             const lines = tree.split("\n").filter(Boolean);
+
+             if (typeof args.page_size === "number") {
+               const cursor = makeCursor(tool.name, lines, lines.length, {
+                 path: targetPath,
+                 shown_entries: shownEntries,
+                 truncated_preview: truncated,
+               });
+               const page = readCursorPage(tool.name, cursor, pageSize);
+               if (!page.ok) {
+                 return { content: [{ type: "text", text: JSON.stringify(page.data) }] };
+               }
+               return {
+                 content: [{
+                   type: "text",
+                   text: JSON.stringify({
+                     lines: page.data.items,
+                     count: lines.length,
+                     summary: page.data.summary,
+                     page: page.data.page,
+                     next: page.data.page.has_more
+                       ? { tool: "expand_result", arguments: { cursor: page.data.page.next_cursor, page_size: pageSize } }
+                       : null,
+                   }),
+                 }],
+               };
+             }
+
+             const tail = truncated
+               ? `\n\n(Preview truncated at ${shownEntries} entries. Use 'path' on a subdirectory or increase 'max_entries' / 'max_depth' to expand.)`
+               : `\n\n(Shown entries: ${shownEntries})`;
              return {
-                 content: [{ type: "text", text: `Project Structure for ${targetPath}:\n\n${tree}` }]
+                 content: [{ type: "text", text: `Project Structure for ${targetPath}:\n\n${tree}${tail}` }]
              };
         }
 
@@ -686,11 +1056,17 @@ function preRegisterTools(): void {
              }
              
              const results: string[] = [];
+             const failedBackendStart = new Map<string, string>();
              
              // Group by language to batch start backends? No, just iterate.
              for (const file of changedFiles) {
                  const language = inferLanguageFromPath(file, config);
                  if (!language) continue; // Skip unsupported files
+
+                 if (failedBackendStart.has(language)) {
+                     results.push(`⚠️ ${path.basename(file)}: Skipped (${language} backend unavailable: ${failedBackendStart.get(language)})`);
+                     continue;
+                 }
                  
                  // Start backend if needed
                  if (!startedBackends.has(language)) {
@@ -698,7 +1074,9 @@ function preRegisterTools(): void {
                          await backendManager.getBackend(language);
                          startedBackends.add(language);
                      } catch (e) {
-                         results.push(`Could not check ${path.basename(file)}: Backend failed to start`);
+                         const reason = e instanceof Error ? e.message : String(e);
+                         failedBackendStart.set(language, reason);
+                         results.push(`⚠️ ${path.basename(file)}: Could not check (${language} backend failed to start: ${reason})`);
                          continue;
                      }
                  }
@@ -737,20 +1115,98 @@ function preRegisterTools(): void {
              return { content: [{ type: "text", text: `Git Diagnostics Report:\n\n${results.join('\n\n')}` }] };
         }
 
+        // Cursor paging for high-volume tools
+        if (
+          (tool.name === "search" ||
+            tool.name === "workspace_symbol" ||
+            tool.name === "diagnostics" ||
+            tool.name === "project_structure" ||
+            tool.name === "summarize_file" ||
+            tool.name === "read_file_with_hints") &&
+          typeof args.cursor === "string"
+        ) {
+          const pageSize = typeof args.page_size === "number"
+            ? args.page_size
+            : (typeof args.preview_limit === "number" ? args.preview_limit : 200);
+          const page = readCursorPage(tool.name, args.cursor, pageSize);
+          if (!page.ok) {
+            return { content: [{ type: "text", text: JSON.stringify(page.data) }] };
+          }
+
+          const itemsKey =
+            tool.name === "diagnostics"
+              ? "diagnostics"
+              : (tool.name === "search" || tool.name === "workspace_symbol")
+                ? "matches"
+                : "lines";
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                [itemsKey]: page.data.items,
+                count: page.data.count,
+                summary: page.data.summary,
+                page: page.data.page,
+                next: page.data.page.has_more
+                  ? { tool: "expand_result", arguments: { cursor: page.data.page.next_cursor, page_size: pageSize } }
+                  : null,
+              }),
+            }],
+          };
+        }
+
+        // For search, if workspace is known, auto-bind path so it can use normal routed flow.
+        if (tool.name === "search" && !args.path && activeWorkspacePath) {
+          args.path = activeWorkspacePath;
+        }
+
         // Find the target path argument
         const filePath = (args.file as string) || (args.path as string);
         
         // Handle search without path (uses active workspace implicitly via backend logic)
-        // Only implementing a simple "try all enabled" for global search
+        // Use active workspace inference to auto-start at least one backend for better OOB behavior
         if ((tool.name === "search" || tool.name === "workspace_symbol") && !filePath) {
-             const languages = Object.keys(config.languages).filter(
+             const enabledLanguages = Object.keys(config.languages).filter(
                (lang) => config.languages[lang].enabled
              );
+             const pageSize = typeof args.page_size === "number"
+               ? args.page_size
+               : (typeof args.preview_limit === "number" ? args.preview_limit : 200);
+             const backendArgs = { ...(args as Record<string, unknown>) };
+             delete backendArgs.preview_limit;
+             delete backendArgs.page_size;
+             delete backendArgs.cursor;
+             if (tool.name === "search" && !backendArgs.path && activeWorkspacePath) {
+               backendArgs.path = activeWorkspacePath;
+             }
+             const startedEnabled = enabledLanguages.filter((lang) => startedBackends.has(lang));
+
+             if (startedEnabled.length === 0) {
+                 const preferred = activeWorkspacePath
+                   ? inferLanguageFromPath(activeWorkspacePath, config)
+                   : null;
+                 const fallback = enabledLanguages.length === 1 ? enabledLanguages[0] : null;
+                 const candidate = preferred || fallback;
+
+                 if (candidate) {
+                    try {
+                      await backendManager.getBackend(candidate);
+                      startedBackends.add(candidate);
+                      if (activeWorkspacePath) {
+                        await backendManager.callTool(candidate, "switch_workspace", { path: activeWorkspacePath });
+                      }
+                    } catch (e) {
+                      // Fall through to graceful empty response below
+                    }
+                 }
+             }
+
              const results = [];
-             for (const lang of languages) {
+             let totalCount = 0;
+             for (const lang of enabledLanguages) {
                  if (startedBackends.has(lang)) {
                      try {
-                         const res = await backendManager.callTool(lang, tool.name, args as Record<string, unknown>);
+                         const res = await backendManager.callTool(lang, tool.name, backendArgs);
                          const parsed = JSON.parse(res.content[0].text);
                          // Handle both 'matches' (search) and direct array (workspace_symbol possible format)
                          // But we expect standardized JSON from backends ideally.
@@ -759,10 +1215,15 @@ function preRegisterTools(): void {
                          if (Array.isArray(parsed)) items = parsed;
                          else if (parsed.matches) items = parsed.matches;
                          else if (parsed.symbols) items = parsed.symbols; // Workspace symbol might return symbols
+                         const parsedCount = typeof parsed.count === "number" ? parsed.count : items.length;
+                         totalCount += parsedCount;
                          
                          if (items.length > 0) {
                             // Tag them with language if not present
-                            results.push(...items.map((i: any) => ({ ...i, language: lang })));
+                            const remaining = Math.max(previewLimit - results.length, 0);
+                            if (remaining > 0) {
+                              results.push(...items.slice(0, remaining).map((i: any) => ({ ...i, language: lang })));
+                            }
                          }
                      } catch (e) {
                          // ignore
@@ -770,10 +1231,27 @@ function preRegisterTools(): void {
                  }
              }
              if (results.length === 0) {
-                 return { content: [{ type: "text", text: JSON.stringify({ matches: [], count: 0, message: "No matches found or no active backends." }) }] };
+                 return { content: [{ type: "text", text: JSON.stringify({ matches: [], count: 0, message: "No matches found. If this is your first query, call switch_workspace(path=...) or pass path=... to search." }) }] };
              }
-             
-             return { content: [{ type: "text", text: JSON.stringify({ matches: results, count: results.length }) }] };
+             const cursor = makeCursor(tool.name, results, totalCount);
+             const page = readCursorPage(tool.name, cursor, pageSize);
+             if (!page.ok) {
+               return { content: [{ type: "text", text: JSON.stringify(page.data) }] };
+             }
+
+             return {
+               content: [{
+                 type: "text",
+                 text: JSON.stringify({
+                   matches: page.data.items,
+                   count: totalCount,
+                   page: page.data.page,
+                   next: page.data.page.has_more
+                     ? { tool: "expand_result", arguments: { cursor: page.data.page.next_cursor, page_size: pageSize } }
+                     : null,
+                 }),
+               }],
+             };
         }
 
         if (!filePath) {
@@ -870,7 +1348,9 @@ function preRegisterTools(): void {
         if (tool.name === "summarize_file") {
           try {
             // Call symbols tool to get the data
-            const result = await backendManager.callTool(language, "symbols", args as Record<string, unknown>);
+            const symbolsArgs = { ...(args as Record<string, unknown>) };
+            delete symbolsArgs.max_symbols;
+            const result = await backendManager.callTool(language, "symbols", symbolsArgs);
             const parsed = JSON.parse(result.content[0].text);
             
             if (parsed.error) {
@@ -879,11 +1359,43 @@ function preRegisterTools(): void {
 
             const symbols = parsed.symbols || [];
             const summary = formatSymbolsToMarkdown(symbols);
+            const maxSymbols = typeof args.max_symbols === "number" ? args.max_symbols : 200;
+            const pageSize = typeof args.page_size === "number" ? args.page_size : 200;
+            const lines = summary.split("\n").filter(Boolean);
+            const truncated = lines.length > maxSymbols;
+            const preview = truncated ? `${lines.slice(0, maxSymbols).join("\n")}\n` : summary;
+
+            if (typeof args.page_size === "number") {
+              const cursor = makeCursor(tool.name, lines, lines.length, {
+                file: filePath,
+                max_symbols: maxSymbols,
+              });
+              const page = readCursorPage(tool.name, cursor, pageSize);
+              if (!page.ok) {
+                return { content: [{ type: "text", text: JSON.stringify(page.data) }] };
+              }
+              return {
+                content: [{
+                  type: "text",
+                  text: JSON.stringify({
+                    lines: page.data.items,
+                    count: lines.length,
+                    summary: page.data.summary,
+                    page: page.data.page,
+                    next: page.data.page.has_more
+                      ? { tool: "expand_result", arguments: { cursor: page.data.page.next_cursor, page_size: pageSize } }
+                      : null,
+                  }),
+                }],
+              };
+            }
             
             return {
               content: [{
                 type: "text",
-                text: `File Summary for ${filePath}:\n\n${summary || "(No symbols found)"}`
+                text: truncated
+                  ? `File Summary for ${filePath} (preview ${maxSymbols}/${lines.length} symbols):\n\n${preview}\n(Use max_symbols to expand.)`
+                  : `File Summary for ${filePath}:\n\n${preview || "(No symbols found)"}`
               }]
             };
           } catch (error) {
@@ -1005,7 +1517,12 @@ function preRegisterTools(): void {
             const content = fs.readFileSync(absPath, "utf-8");
 
             // 2. Get hints from backend
-            const result = await backendManager.callTool(language, "inlay_hints", args as Record<string, unknown>);
+            const hintsArgs = { ...(args as Record<string, unknown>) };
+            delete hintsArgs.start_line;
+            delete hintsArgs.max_lines;
+            delete hintsArgs.page_size;
+            delete hintsArgs.cursor;
+            const result = await backendManager.callTool(language, "inlay_hints", hintsArgs);
             const parsed = JSON.parse(result.content[0].text);
             
             if (parsed.error) {
@@ -1018,11 +1535,59 @@ function preRegisterTools(): void {
             
             // 3. Apply hints
             const contentWithHints = applyInlayHints(content, hints, language);
+            const pageSize = typeof args.page_size === "number" ? args.page_size : 200;
+            const startLine = typeof args.start_line === "number" ? args.start_line : 1;
+            const maxLines = typeof args.max_lines === "number" ? args.max_lines : 300;
+            const allLines = contentWithHints.split("\n");
+
+            if (typeof args.page_size === "number") {
+              const numbered = allLines.map((line, idx) => `${String(idx + 1).padStart(5)} | ${line}`);
+              const cursor = makeCursor(tool.name, numbered, numbered.length, {
+                file: filePath,
+                total_lines: allLines.length,
+              });
+              const page = readCursorPage(tool.name, cursor, pageSize);
+              if (!page.ok) {
+                return { content: [{ type: "text", text: JSON.stringify(page.data) }] };
+              }
+              return {
+                content: [{
+                  type: "text",
+                  text: JSON.stringify({
+                    lines: page.data.items,
+                    count: numbered.length,
+                    summary: page.data.summary,
+                    page: page.data.page,
+                    next: page.data.page.has_more
+                      ? { tool: "expand_result", arguments: { cursor: page.data.page.next_cursor, page_size: pageSize } }
+                      : null,
+                  }),
+                }],
+              };
+            }
+
+            const startIdx = Math.max(0, startLine - 1);
+            const endIdx = Math.min(allLines.length, startIdx + maxLines);
+            const isPreview = startIdx > 0 || endIdx < allLines.length;
+
+            if (!isPreview) {
+              return {
+                content: [{
+                  type: "text",
+                  text: contentWithHints
+                }]
+              };
+            }
+
+            const snippet = allLines
+              .slice(startIdx, endIdx)
+              .map((line, idx) => `${String(startIdx + idx + 1).padStart(5)} | ${line}`)
+              .join("\n");
             
             return {
               content: [{
                 type: "text",
-                text: contentWithHints
+                text: `File preview for ${filePath} (lines ${startIdx + 1}-${endIdx} of ${allLines.length}):\n\n${snippet}\n\n(Use start_line/max_lines to expand.)`
               }]
             };
           } catch (error) {
@@ -1043,12 +1608,192 @@ function preRegisterTools(): void {
             backendArgs.newName = args.newName || args.new_name;
           }
         }
+        if (tool.name === "search" || tool.name === "workspace_symbol") {
+          delete backendArgs.preview_limit;
+          delete backendArgs.page_size;
+          delete backendArgs.cursor;
+        }
+        if (tool.name === "diagnostics") {
+          delete backendArgs.preview_limit;
+          delete backendArgs.page_size;
+          delete backendArgs.cursor;
+          delete backendArgs.summary_only;
+        }
+        if (tool.name === "project_structure" || tool.name === "summarize_file" || tool.name === "read_file_with_hints") {
+          delete backendArgs.page_size;
+          delete backendArgs.cursor;
+        }
 
         // Call the actual backend tool
-        return backendManager.callTool(language, tool.name, backendArgs);
+        const backendResult = await backendManager.callTool(language, tool.name, backendArgs);
+
+        // High-volume results get a compact preview by default.
+        if (tool.name === "search" || tool.name === "workspace_symbol") {
+          try {
+            const parsed = JSON.parse(backendResult.content[0].text);
+            const pageSize = typeof args.page_size === "number"
+              ? args.page_size
+              : (typeof args.preview_limit === "number" ? args.preview_limit : 200);
+            const items = Array.isArray(parsed)
+              ? parsed
+              : Array.isArray(parsed.matches)
+                ? parsed.matches
+                : Array.isArray(parsed.symbols)
+                  ? parsed.symbols
+                  : [];
+            const count = typeof parsed.count === "number" ? parsed.count : items.length;
+            const cursor = makeCursor(tool.name, items, count);
+            const page = readCursorPage(tool.name, cursor, pageSize);
+            if (!page.ok) {
+              return { content: [{ type: "text", text: JSON.stringify(page.data) }] };
+            }
+            return {
+              content: [{
+                type: "text",
+                text: JSON.stringify({
+                  matches: page.data.items,
+                  count,
+                  page: page.data.page,
+                  next: page.data.page.has_more
+                    ? { tool: "expand_result", arguments: { cursor: page.data.page.next_cursor, page_size: pageSize } }
+                    : null,
+                }),
+              }],
+            };
+          } catch {
+            return backendResult;
+          }
+        }
+
+        if (tool.name === "diagnostics") {
+          try {
+            const parsed = JSON.parse(backendResult.content[0].text);
+            const diagnostics = Array.isArray(parsed)
+              ? parsed
+              : Array.isArray(parsed.diagnostics)
+                ? parsed.diagnostics
+                : null;
+            if (!diagnostics) return backendResult;
+
+            const pageSize = typeof args.page_size === "number"
+              ? args.page_size
+              : (typeof args.preview_limit === "number" ? args.preview_limit : 200);
+            const summaryOnly = !!args.summary_only;
+
+            const severityCounts = diagnostics.reduce((acc: Record<string, number>, d: any) => {
+              const sev = String(d.severity ?? "unknown");
+              acc[sev] = (acc[sev] || 0) + 1;
+              return acc;
+            }, {});
+            const fileCounts = diagnostics.reduce((acc: Record<string, number>, d: any) => {
+              const key = d.file || d.uri || args.path || "unknown";
+              acc[key] = (acc[key] || 0) + 1;
+              return acc;
+            }, {});
+
+            if (summaryOnly) {
+              return {
+                content: [{
+                  type: "text",
+                  text: JSON.stringify({
+                    count: diagnostics.length,
+                    summary: {
+                      by_severity: severityCounts,
+                      by_file: fileCounts,
+                    },
+                    preview: {
+                      shown: 0,
+                      limit: pageSize,
+                      truncated: diagnostics.length > 0,
+                    },
+                    next: diagnostics.length > 0
+                      ? { tool: tool.name, arguments: { path: args.path, summary_only: false, page_size: pageSize } }
+                      : null,
+                  }),
+                }],
+              };
+            }
+
+            const summary = {
+              by_severity: severityCounts,
+              by_file: fileCounts,
+            };
+            const cursor = makeCursor(tool.name, diagnostics, diagnostics.length, summary);
+            const page = readCursorPage(tool.name, cursor, pageSize);
+            if (!page.ok) {
+              return { content: [{ type: "text", text: JSON.stringify(page.data) }] };
+            }
+            return {
+              content: [{
+                type: "text",
+                text: JSON.stringify({
+                  diagnostics: page.data.items,
+                  count: diagnostics.length,
+                  summary,
+                  page: page.data.page,
+                  next: page.data.page.has_more
+                    ? { tool: "expand_result", arguments: { cursor: page.data.page.next_cursor, page_size: pageSize } }
+                    : null,
+                }),
+              }],
+            };
+          } catch {
+            return backendResult;
+          }
+        }
+
+        return backendResult;
       }
     );
     registeredTools.add(tool.name);
+  }
+
+  // 1.5 Register legacy namespaced aliases for common unified tools
+  for (const [language, langConfig] of Object.entries(config.languages)) {
+    if (!langConfig?.enabled) continue;
+
+    for (const tool of UNIFIED_TOOLS) {
+      if (!LEGACY_NAMESPACED_UNIFIED_TOOL_NAMES.has(tool.name)) continue;
+
+      const aliasName = `${language}_${tool.name}`;
+      if (registeredTools.has(aliasName)) continue;
+
+      server.registerTool(
+        aliasName,
+        {
+          description: `${tool.description} (legacy alias; prefer '${tool.name}')`,
+          inputSchema: tool.schema,
+        },
+        async (args) => {
+          if (!startedBackends.has(language)) {
+            await backendManager.getBackend(language);
+            startedBackends.add(language);
+
+            if (activeWorkspacePath) {
+              console.error(`[lsp-mcp] Syncing active workspace to ${language}: ${activeWorkspacePath}`);
+              try {
+                await backendManager.callTool(language, "switch_workspace", { path: activeWorkspacePath });
+              } catch (syncError) {
+                console.error(`[lsp-mcp] Failed to sync workspace to ${language}:`, syncError);
+              }
+            }
+          }
+
+          const backendArgs = { ...args } as Record<string, unknown>;
+          if (tool.name === "rename") {
+            if (language === "python") {
+              backendArgs.new_name = args.newName || args.new_name;
+            } else {
+              backendArgs.newName = args.newName || args.new_name;
+            }
+          }
+
+          return backendManager.callTool(language, tool.name, backendArgs);
+        }
+      );
+
+      registeredTools.add(aliasName);
+    }
   }
 
   // 2. Register Language-Specific Tools
