@@ -51,9 +51,24 @@ async function copyBackend(name: string, dir: string) {
     // Copy TypeScript build artifacts
     await $`cp -r ${path.join(sourcePath, "dist")} ${targetPath}/`;
     await $`cp ${path.join(sourcePath, "package.json")} ${targetPath}/`;
-    // We also need dependencies for the bundled backend
-    // For now, we'll assume node_modules are handled or bundled backends are self-contained enough
-    // Ideally, we should bundle deps or use bun build --compile
+
+    if (name === "vue") {
+      // Vue backend needs semantic runtime deps at execution time (not just build-time dev deps).
+      const targetPkgPath = path.join(targetPath, "package.json");
+      const sourcePkg = JSON.parse(fs.readFileSync(path.join(sourcePath, "package.json"), "utf-8"));
+      const targetPkg = JSON.parse(fs.readFileSync(targetPkgPath, "utf-8"));
+      const runtimeDeps = {
+        ...targetPkg.dependencies,
+        typescript: sourcePkg.devDependencies?.typescript || "^5.7.2",
+        "@vue/language-server": sourcePkg.peerDependencies?.["@vue/language-server"] || ">=2.0.0",
+      };
+      targetPkg.dependencies = runtimeDeps;
+      fs.writeFileSync(targetPkgPath, `${JSON.stringify(targetPkg, null, 2)}\n`, "utf-8");
+    }
+
+    // Install production dependencies in the bundled directory
+    console.log(`Installing dependencies for ${name}...`);
+    await $`cd ${targetPath} && bun install --production`;
   }
 }
 
