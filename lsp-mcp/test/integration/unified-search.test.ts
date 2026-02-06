@@ -17,6 +17,7 @@ describe("Unified Search", () => {
     fs.writeFileSync(
       path.join(TEST_DIR, "src", "index.ts"),
       `export const ${MARKER} = "ok";\n` +
+      `export const ${MARKER}Alias = ${MARKER};\n` +
       `export const ${MARKER}A = "a";\n` +
       `export const ${MARKER}B = "b";\n` +
       `export const ${MARKER}C = "c";\n`
@@ -41,6 +42,24 @@ describe("Unified Search", () => {
   it("should auto-start a backend for search without explicit path after workspace switch", async () => {
     await client.callTool("switch_workspace", { path: TEST_DIR });
     const result = await client.callTool("search", { pattern: MARKER });
+
+    expect(result.error).toBeUndefined();
+    expect(Array.isArray(result.matches)).toBe(true);
+    expect(result.matches.length).toBeGreaterThan(0);
+  });
+
+  it("should accept query alias for search pattern", async () => {
+    await client.callTool("switch_workspace", { path: TEST_DIR });
+    const result = await client.callTool("search", { query: MARKER });
+
+    expect(result.error).toBeUndefined();
+    expect(Array.isArray(result.matches)).toBe(true);
+    expect(result.matches.length).toBeGreaterThan(0);
+  });
+
+  it("should return workspace_symbol matches without requiring pre-started backends", async () => {
+    await client.callTool("switch_workspace", { path: TEST_DIR });
+    const result = await client.callTool("workspace_symbol", { query: MARKER });
 
     expect(result.error).toBeUndefined();
     expect(Array.isArray(result.matches)).toBe(true);
@@ -147,6 +166,30 @@ describe("Unified Search", () => {
     expect(Array.isArray(first.lines)).toBe(true);
     expect(first.next?.tool).toBe("expand_result");
     expect(first.next?.arguments?.cursor).toBeDefined();
+  });
+
+  it("should paginate references in compact mode", async () => {
+    await client.callTool("switch_workspace", { path: TEST_DIR });
+    const file = path.join(TEST_DIR, "src", "index.ts");
+    const first = await client.callTool("references", {
+      file,
+      line: 1,
+      column: 14,
+      page_size: 1,
+    });
+
+    expect(Array.isArray(first.references)).toBe(true);
+    expect(first.references.length).toBe(1);
+    expect(first.count).toBeGreaterThan(1);
+    expect(first.next?.tool).toBe("expand_result");
+
+    const second = await client.callTool("expand_result", {
+      cursor: first.next.arguments.cursor,
+      page_size: 1,
+    });
+    expect(second.tool).toBe("references");
+    expect(Array.isArray(second.references)).toBe(true);
+    expect(second.references.length).toBe(1);
   });
 
   it("should return diagnostics summary/preview metadata", async () => {

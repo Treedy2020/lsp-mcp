@@ -58,6 +58,7 @@ const cursorStore = new Map<string, { tool: string; items: any[]; createdAt: num
 const CURSOR_TTL_MS = 10 * 60 * 1000;
 const CURSOR_MAX_ENTRIES = 100;
 const CURSOR_SECRET = randomBytes(16).toString("hex");
+let vueBundledDepsMissingCache: boolean | null = null;
 
 // Create MCP server
 const server = new McpServer({
@@ -585,6 +586,7 @@ server.registerTool(
         : null,
     };
     if (page.tool === "diagnostics") payload.diagnostics = page.data.items;
+    if (page.tool === "references") payload.references = page.data.items;
     if (page.tool === "search" || page.tool === "workspace_symbol") payload.matches = page.data.items;
     if (page.tool === "project_structure" || page.tool === "summarize_file" || page.tool === "read_file_with_hints") {
       payload.lines = page.data.items;
@@ -656,14 +658,14 @@ const UNIFIED_TOOLS: Array<{
 }> = [
   { name: "hover", description: "Get type information and documentation at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
   { name: "definition", description: "Go to definition of a symbol at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
-  { name: "references", description: "Find all references to a symbol at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
+  { name: "references", description: "Find all references to a symbol at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive(), preview_limit: z.number().int().positive().default(200).optional(), page_size: z.number().int().positive().default(200).optional(), cursor: z.string().optional() } },
   { name: "completions", description: "Get code completion suggestions at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive(), limit: z.number().int().positive().default(20).optional() } },
   { name: "signature_help", description: "Get function signature help at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
   { name: "symbols", description: "Extract symbols (classes, functions, methods, variables) from a file", schema: { file: z.string(), query: z.string().optional() } },
   { name: "diagnostics", description: "Get type errors/warnings. NOTE: On mixed-language directories, it only checks the primary language (TS > Python). Prefer specific subdirectories or 'git_diagnostics'.", schema: { path: z.string().optional(), preview_limit: z.number().int().positive().default(200).optional(), page_size: z.number().int().positive().default(200).optional(), cursor: z.string().optional(), summary_only: z.boolean().default(false).optional() } },
   { name: "rename", description: "Preview renaming a symbol at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive(), newName: z.string() } },
   { name: "update_document", description: "Update file content for incremental analysis without writing to disk", schema: { file: z.string(), content: z.string() } },
-  { name: "search", description: "Search for a pattern in files using ripgrep. Uses active workspace if path is omitted.", schema: { pattern: z.string().optional(), path: z.string().optional(), glob: z.string().optional(), preview_limit: z.number().int().positive().default(200).optional(), page_size: z.number().int().positive().default(200).optional(), cursor: z.string().optional() } },
+  { name: "search", description: "Search for a pattern in files using ripgrep. Uses active workspace if path is omitted.", schema: { pattern: z.string().optional(), query: z.string().optional(), path: z.string().optional(), glob: z.string().optional(), preview_limit: z.number().int().positive().default(200).optional(), page_size: z.number().int().positive().default(200).optional(), cursor: z.string().optional() } },
   { name: "summarize_file", description: "Get a high-level outline of a file (classes, functions, methods) to understand its structure without reading the full content.", schema: { file: z.string(), max_symbols: z.number().int().positive().default(200).optional(), page_size: z.number().int().positive().default(200).optional(), cursor: z.string().optional() } },
   { name: "read_file_with_hints", description: "Read file content with inlay hints (type annotations, parameter names) inserted as comments. Useful for understanding complex code.", schema: { file: z.string(), start_line: z.number().int().positive().default(1).optional(), max_lines: z.number().int().positive().default(300).optional(), page_size: z.number().int().positive().default(200).optional(), cursor: z.string().optional() } },
   { name: "code_action", description: "Get available code actions (refactors and quick fixes) at a specific position", schema: { file: z.string(), line: z.number().int().positive(), column: z.number().int().positive() } },
@@ -765,6 +767,360 @@ function formatSymbolsToMarkdown(symbols: any[], depth = 0): string {
   }
   
   return output;
+}
+
+function extractSearchLikeItems(parsed: any): any[] {
+  if (Array.isArray(parsed)) return parsed;
+  if (!parsed || typeof parsed !== "object") return [];
+
+  const candidates = [parsed.matches, parsed.results, parsed.symbols, parsed.items];
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) return candidate;
+  }
+  return [];
+}
+
+function extractSearchLikeCount(parsed: any, items: any[]): number {
+  return typeof parsed?.count === "number" ? parsed.count : items.length;
+}
+
+function extractReferencesItems(parsed: any): any[] {
+  if (Array.isArray(parsed)) return parsed;
+  if (Array.isArray(parsed?.references)) return parsed.references;
+  return [];
+}
+
+function extractReferencesCount(parsed: any, items: any[]): number {
+  return typeof parsed?.count === "number" ? parsed.count : items.length;
+}
+
+function isInlayHintUnsupportedError(errorText: string): boolean {
+  const text = errorText.toLowerCase();
+  return (
+    text.includes("textdocument/inlayhint") ||
+    text.includes("unhandled method") ||
+    text.includes("method not found") ||
+    text.includes("not implemented") ||
+    text.includes("unknown tool") ||
+    text.includes("tool not found") ||
+    text.includes("inlay_hints") ||
+    text.includes("-32601")
+  );
+}
+
+function extractIdentifierAtPosition(fileContent: string, line: number, column: number): string | null {
+  const lines = fileContent.split("\n");
+  const lineIdx = line - 1;
+  if (lineIdx < 0 || lineIdx >= lines.length) return null;
+  const text = lines[lineIdx];
+  if (!text) return null;
+  const charIdx = Math.max(0, Math.min(column - 1, Math.max(0, text.length - 1)));
+  const isWord = (ch: string) => /[A-Za-z0-9_$]/.test(ch);
+
+  const nearestToken = (() => {
+    const tokenRegex = /[A-Za-z_$][A-Za-z0-9_$]*/g;
+    let best: { value: string; distance: number } | null = null;
+    let m: RegExpExecArray | null;
+    while ((m = tokenRegex.exec(text)) !== null) {
+      const start = m.index;
+      const end = start + m[0].length - 1;
+      const distance = charIdx >= start && charIdx <= end
+        ? 0
+        : Math.min(Math.abs(charIdx - start), Math.abs(charIdx - end));
+      if (!best || distance < best.distance) {
+        best = { value: m[0], distance };
+      }
+    }
+    return best;
+  })();
+
+  if (!nearestToken || nearestToken.distance > 24) {
+    return null;
+  }
+
+  let anchor = charIdx;
+  if (!isWord(text[anchor])) {
+    for (let delta = 1; delta <= 24; delta++) {
+      const left = anchor - delta;
+      const right = anchor + delta;
+      if (left >= 0 && isWord(text[left])) {
+        anchor = left;
+        break;
+      }
+      if (right < text.length && isWord(text[right])) {
+        anchor = right;
+        break;
+      }
+    }
+  }
+
+  if (!isWord(text[anchor])) {
+    return nearestToken.value;
+  }
+
+  let start = anchor;
+  let end = anchor + 1;
+  while (start > 0 && isWord(text[start - 1])) start--;
+  while (end < text.length && isWord(text[end])) end++;
+  const ident = text.slice(start, end).trim();
+  return ident || nearestToken.value;
+}
+
+function buildVueFallbackSymbols(fileContent: string, query?: string): Array<{ name: string; kind: string; line: number; column: number }> {
+  const symbols: Array<{ name: string; kind: string; line: number; column: number }> = [];
+  const lines = fileContent.split("\n");
+  const pattern = /\b(const|let|var|function|class|interface|type)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g;
+
+  for (let i = 0; i < lines.length; i++) {
+    let match: RegExpExecArray | null;
+    pattern.lastIndex = 0;
+    while ((match = pattern.exec(lines[i])) !== null) {
+      const name = match[2];
+      if (query && !name.toLowerCase().includes(query.toLowerCase())) continue;
+      symbols.push({
+        name,
+        kind: match[1],
+        line: i + 1,
+        column: match.index + 1,
+      });
+    }
+  }
+  return symbols;
+}
+
+function findWorkspaceIdentifierHits(identifier: string, workspacePath?: string): Array<{ file: string; line: number; column: number; text: string }> {
+  if (!workspacePath || !identifier) return [];
+  const escaped = identifier.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = `\\b${escaped}\\b`;
+  const args = [
+    "--line-number",
+    "--column",
+    "--no-heading",
+    "--color",
+    "never",
+    "-g",
+    "*.vue",
+    "-g",
+    "*.ts",
+    "-g",
+    "*.tsx",
+    "-g",
+    "*.js",
+    "-g",
+    "*.jsx",
+    pattern,
+    ".",
+  ];
+  const result = spawnSync("rg", args, { cwd: workspacePath, encoding: "utf-8" });
+  if (result.error || typeof result.stdout !== "string" || result.stdout.trim().length === 0) {
+    return [];
+  }
+
+  const hits: Array<{ file: string; line: number; column: number; text: string }> = [];
+  for (const line of result.stdout.split("\n")) {
+    if (!line.trim()) continue;
+    const m = /^(.+?):(\d+):(\d+):(.*)$/.exec(line);
+    if (!m) continue;
+    hits.push({
+      file: path.join(workspacePath, m[1]),
+      line: Number(m[2]),
+      column: Number(m[3]),
+      text: m[4],
+    });
+    if (hits.length >= 500) break;
+  }
+  return hits;
+}
+
+function findDeclarationInFile(content: string, identifier: string): { line: number; column: number } | null {
+  const decl = new RegExp(`\\b(const|let|var|function|class|interface|type)\\s+${identifier}\\b`);
+  const lines = content.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const m = decl.exec(lines[i]);
+    if (!m) continue;
+    return { line: i + 1, column: m.index + 1 };
+  }
+  return null;
+}
+
+function bundledVueSemanticDepsMissing(): boolean {
+  if (vueBundledDepsMissingCache !== null) return vueBundledDepsMissingCache;
+  try {
+    const bundledPkgPath = require.resolve("../dist/bundled/vue/package.json");
+    const bundledRoot = path.dirname(bundledPkgPath);
+    const hasTypeScript = fs.existsSync(path.join(bundledRoot, "node_modules", "typescript", "lib", "tsserver.js"));
+    const hasLanguageServer = fs.existsSync(path.join(bundledRoot, "node_modules", "@vue", "language-server"));
+    vueBundledDepsMissingCache = !(hasTypeScript && hasLanguageServer);
+    return vueBundledDepsMissingCache;
+  } catch {
+    vueBundledDepsMissingCache = false;
+    return false;
+  }
+}
+
+function buildVueDiagnosticsFallback(args: Record<string, unknown>): { content: Array<{ type: "text"; text: string }> } {
+  const limit = typeof args.preview_limit === "number" ? args.preview_limit : 200;
+  return {
+    content: [{
+      type: "text",
+      text: JSON.stringify({
+        count: 0,
+        summary: { by_severity: {}, by_file: {} },
+        preview: { shown: 0, limit, truncated: false },
+        diagnostics: [],
+        fallback: "vue_semantic_unavailable",
+        next: null,
+      }),
+    }],
+  };
+}
+
+function pickVueFallbackIdentifier(vueContent: string, args: Record<string, unknown>): string | null {
+  const direct = extractIdentifierAtPosition(vueContent, Number(args.line), Number(args.column));
+  if (direct) return direct;
+
+  if (typeof args.query === "string" && args.query.trim().length > 0) {
+    return args.query.trim();
+  }
+
+  const firstSymbol = buildVueFallbackSymbols(vueContent)[0];
+  return firstSymbol?.name ?? null;
+}
+
+function buildVueFallbackResponse(
+  toolName: string,
+  filePathArg: string,
+  args: Record<string, unknown>,
+  activeWorkspacePath?: string
+): { content: Array<{ type: "text"; text: string }> } | null {
+  let absVuePath = filePathArg;
+  if (!path.isAbsolute(absVuePath) && activeWorkspacePath) {
+    absVuePath = path.join(activeWorkspacePath, absVuePath);
+  }
+  if (!absVuePath || !fs.existsSync(absVuePath)) return null;
+
+  const vueContent = fs.readFileSync(absVuePath, "utf-8");
+  if (toolName === "symbols") {
+    const fallbackSymbols = buildVueFallbackSymbols(vueContent, typeof args.query === "string" ? args.query : undefined);
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({ symbols: fallbackSymbols, count: fallbackSymbols.length, fallback: "vue_regex" }),
+      }],
+    };
+  }
+
+  if (toolName === "hover") {
+    const ident = pickVueFallbackIdentifier(vueContent, args);
+    if (!ident) return null;
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          contents: `symbol ${ident}`,
+          documentation: "Fallback hover for Vue file (semantic server returned no info).",
+          fallback: "vue_identifier",
+        }),
+      }],
+    };
+  }
+
+  if (toolName === "definition") {
+    const ident = pickVueFallbackIdentifier(vueContent, args);
+    if (!ident) return null;
+    const escaped = ident.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const localDecl = findDeclarationInFile(vueContent, escaped);
+    if (localDecl) {
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            file: absVuePath,
+            line: localDecl.line,
+            column: localDecl.column,
+            kind: "fallback",
+            name: ident,
+          }),
+        }],
+      };
+    }
+
+    const workspaceHits = findWorkspaceIdentifierHits(ident, activeWorkspacePath);
+    for (const hit of workspaceHits) {
+      if (!fs.existsSync(hit.file)) continue;
+      const fileContent = fs.readFileSync(hit.file, "utf-8");
+      const decl = findDeclarationInFile(fileContent, escaped);
+      if (!decl) continue;
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            file: hit.file,
+            line: decl.line,
+            column: decl.column,
+            kind: "fallback",
+            name: ident,
+          }),
+        }],
+      };
+    }
+    if (workspaceHits.length > 0) {
+      const first = workspaceHits[0];
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            file: first.file,
+            line: first.line,
+            column: first.column,
+            kind: "fallback",
+            name: ident,
+          }),
+        }],
+      };
+    }
+  }
+
+  if (toolName === "references") {
+    const ident = pickVueFallbackIdentifier(vueContent, args);
+    if (!ident) return null;
+    const refs = findWorkspaceIdentifierHits(ident, activeWorkspacePath).map((h) => ({
+      file: h.file,
+      line: h.line,
+      column: h.column,
+    }));
+    if (refs.length === 0) {
+      const localPattern = new RegExp(`\\b${ident.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g");
+      const lines = vueContent.split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        localPattern.lastIndex = 0;
+        let match: RegExpExecArray | null;
+        while ((match = localPattern.exec(lines[i])) !== null) {
+          refs.push({ file: absVuePath, line: i + 1, column: match.index + 1 });
+        }
+      }
+    }
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({ references: refs, count: refs.length, fallback: "vue_regex" }),
+      }],
+    };
+  }
+
+  return null;
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timeoutHandle: NodeJS.Timeout | null = null;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+  }
 }
 
 function cleanupCursors(): void {
@@ -1120,6 +1476,7 @@ function preRegisterTools(): void {
           (tool.name === "search" ||
             tool.name === "workspace_symbol" ||
             tool.name === "diagnostics" ||
+            tool.name === "references" ||
             tool.name === "project_structure" ||
             tool.name === "summarize_file" ||
             tool.name === "read_file_with_hints") &&
@@ -1136,6 +1493,8 @@ function preRegisterTools(): void {
           const itemsKey =
             tool.name === "diagnostics"
               ? "diagnostics"
+              : tool.name === "references"
+                ? "references"
               : (tool.name === "search" || tool.name === "workspace_symbol")
                 ? "matches"
                 : "lines";
@@ -1179,9 +1538,38 @@ function preRegisterTools(): void {
              if (tool.name === "search" && !backendArgs.path && activeWorkspacePath) {
                backendArgs.path = activeWorkspacePath;
              }
+             if (tool.name === "search" && typeof backendArgs.pattern !== "string") {
+               const query = typeof args.query === "string" ? args.query.trim() : "";
+               if (query.length > 0) {
+                 backendArgs.pattern = query;
+               }
+             }
+             if (tool.name === "workspace_symbol" && !backendArgs.path && activeWorkspacePath) {
+               backendArgs.path = activeWorkspacePath;
+             }
+             const workspaceQuery =
+               tool.name === "workspace_symbol" && typeof args.query === "string" && args.query.trim().length > 0
+                 ? args.query.trim()
+                 : null;
              const startedEnabled = enabledLanguages.filter((lang) => startedBackends.has(lang));
+             const startAndSyncBackend = async (lang: string) => {
+               await backendManager.getBackend(lang);
+               startedBackends.add(lang);
+               if (activeWorkspacePath) {
+                 await backendManager.callTool(lang, "switch_workspace", { path: activeWorkspacePath });
+               }
+             };
 
-             if (startedEnabled.length === 0) {
+             if (tool.name === "workspace_symbol") {
+                 for (const lang of enabledLanguages) {
+                   if (startedBackends.has(lang)) continue;
+                   try {
+                     await startAndSyncBackend(lang);
+                   } catch {
+                     // Best-effort startup across languages for mixed-language workspaces.
+                   }
+                 }
+             } else if (startedEnabled.length === 0) {
                  const preferred = activeWorkspacePath
                    ? inferLanguageFromPath(activeWorkspacePath, config)
                    : null;
@@ -1190,11 +1578,7 @@ function preRegisterTools(): void {
 
                  if (candidate) {
                     try {
-                      await backendManager.getBackend(candidate);
-                      startedBackends.add(candidate);
-                      if (activeWorkspacePath) {
-                        await backendManager.callTool(candidate, "switch_workspace", { path: activeWorkspacePath });
-                      }
+                      await startAndSyncBackend(candidate);
                     } catch (e) {
                       // Fall through to graceful empty response below
                     }
@@ -1206,21 +1590,38 @@ function preRegisterTools(): void {
              for (const lang of enabledLanguages) {
                  if (startedBackends.has(lang)) {
                      try {
-                         const res = await backendManager.callTool(lang, tool.name, backendArgs);
-                         const parsed = JSON.parse(res.content[0].text);
-                         // Handle both 'matches' (search) and direct array (workspace_symbol possible format)
-                         // But we expect standardized JSON from backends ideally.
-                         // Let's assume parsed is { matches: [...] } or just [...]
-                         let items = [];
-                         if (Array.isArray(parsed)) items = parsed;
-                         else if (parsed.matches) items = parsed.matches;
-                         else if (parsed.symbols) items = parsed.symbols; // Workspace symbol might return symbols
-                         const parsedCount = typeof parsed.count === "number" ? parsed.count : items.length;
+                         let parsed: any;
+                         try {
+                           const res = await backendManager.callTool(lang, tool.name, backendArgs);
+                           parsed = JSON.parse(res.content[0].text);
+                         } catch {
+                           if (!workspaceQuery) {
+                             continue;
+                           }
+                           // Fallback for backends that don't support workspace_symbol.
+                           const fallbackRes = await backendManager.callTool(lang, "search", {
+                             pattern: workspaceQuery,
+                           });
+                           parsed = JSON.parse(fallbackRes.content[0].text);
+                         }
+
+                         let items = extractSearchLikeItems(parsed);
+                         if (items.length === 0 && workspaceQuery) {
+                           // Some backends may return empty workspace symbols even with valid query.
+                           const fallbackRes = await backendManager.callTool(lang, "search", {
+                             pattern: workspaceQuery,
+                           });
+                           const fallbackParsed = JSON.parse(fallbackRes.content[0].text);
+                           items = extractSearchLikeItems(fallbackParsed);
+                           parsed = fallbackParsed;
+                         }
+
+                         const parsedCount = extractSearchLikeCount(parsed, items);
                          totalCount += parsedCount;
                          
                          if (items.length > 0) {
                             // Tag them with language if not present
-                            const remaining = Math.max(previewLimit - results.length, 0);
+                            const remaining = Math.max(pageSize - results.length, 0);
                             if (remaining > 0) {
                               results.push(...items.slice(0, remaining).map((i: any) => ({ ...i, language: lang })));
                             }
@@ -1522,16 +1923,26 @@ function preRegisterTools(): void {
             delete hintsArgs.max_lines;
             delete hintsArgs.page_size;
             delete hintsArgs.cursor;
-            const result = await backendManager.callTool(language, "inlay_hints", hintsArgs);
-            const parsed = JSON.parse(result.content[0].text);
-            
-            if (parsed.error) {
-               // If backend fails (e.g. timeout), just return content without hints?
-               // Or report error. Let's report error to be safe.
-               return { content: [{ type: "text", text: JSON.stringify(parsed) }] };
+            let hints: any[] = [];
+            try {
+              const result = await backendManager.callTool(language, "inlay_hints", hintsArgs);
+              const parsed = JSON.parse(result.content[0].text);
+              if (parsed?.error) {
+                const errorText = typeof parsed.error === "string" ? parsed.error : JSON.stringify(parsed.error);
+                if (!isInlayHintUnsupportedError(errorText)) {
+                  return { content: [{ type: "text", text: JSON.stringify(parsed) }] };
+                }
+              } else {
+                hints = Array.isArray(parsed?.hints) ? parsed.hints : [];
+              }
+            } catch (error) {
+              const errorText = String(error);
+              if (!isInlayHintUnsupportedError(errorText)) {
+                return {
+                  content: [{ type: "text", text: JSON.stringify({ error: `Failed to read file with hints: ${error}` }) }],
+                };
+              }
             }
-            
-            const hints = parsed.hints || [];
             
             // 3. Apply hints
             const contentWithHints = applyInlayHints(content, hints, language);
@@ -1609,6 +2020,17 @@ function preRegisterTools(): void {
           }
         }
         if (tool.name === "search" || tool.name === "workspace_symbol") {
+          if (tool.name === "search" && typeof backendArgs.pattern !== "string") {
+            const query = typeof args.query === "string" ? args.query.trim() : "";
+            if (query.length > 0) {
+              backendArgs.pattern = query;
+            }
+          }
+          delete backendArgs.preview_limit;
+          delete backendArgs.page_size;
+          delete backendArgs.cursor;
+        }
+        if (tool.name === "references") {
           delete backendArgs.preview_limit;
           delete backendArgs.page_size;
           delete backendArgs.cursor;
@@ -1624,8 +2046,51 @@ function preRegisterTools(): void {
           delete backendArgs.cursor;
         }
 
+        if (language === "vue" && tool.name === "diagnostics" && bundledVueSemanticDepsMissing()) {
+          return buildVueDiagnosticsFallback(args as Record<string, unknown>);
+        }
+
         // Call the actual backend tool
-        const backendResult = await backendManager.callTool(language, tool.name, backendArgs);
+        const isVueFragileTool =
+          language === "vue" && (tool.name === "symbols" || tool.name === "hover" || tool.name === "definition" || tool.name === "references");
+        if (isVueFragileTool && bundledVueSemanticDepsMissing() && typeof filePath === "string") {
+          const fallback = buildVueFallbackResponse(tool.name, filePath, backendArgs, activeWorkspacePath);
+          if (fallback) {
+            return fallback;
+          }
+        }
+        let backendResult;
+        try {
+          const callPromise = backendManager.callTool(language, tool.name, backendArgs);
+          backendResult = isVueFragileTool
+            ? await withTimeout(callPromise, 1200, `Vue ${tool.name}`)
+            : await callPromise;
+        } catch (error) {
+          if (isVueFragileTool && typeof filePath === "string") {
+            const fallback = buildVueFallbackResponse(tool.name, filePath, backendArgs, activeWorkspacePath);
+            if (fallback) {
+              return fallback;
+            }
+          }
+          throw error;
+        }
+
+        if (language === "vue" && (tool.name === "symbols" || tool.name === "hover" || tool.name === "definition" || tool.name === "references")) {
+          try {
+            const parsed = JSON.parse(backendResult.content[0].text);
+            const shouldFallback =
+              (tool.name === "symbols" && (parsed?.error || !Array.isArray(parsed?.symbols) || parsed.symbols.length === 0)) ||
+              ((tool.name === "hover" || tool.name === "definition" || tool.name === "references") && !!parsed?.error);
+            if (shouldFallback && typeof filePath === "string") {
+              const fallback = buildVueFallbackResponse(tool.name, filePath, backendArgs, activeWorkspacePath);
+              if (fallback) {
+                return fallback;
+              }
+            }
+          } catch {
+            // Keep original backend response if fallback parsing fails.
+          }
+        }
 
         // High-volume results get a compact preview by default.
         if (tool.name === "search" || tool.name === "workspace_symbol") {
@@ -1636,12 +2101,8 @@ function preRegisterTools(): void {
               : (typeof args.preview_limit === "number" ? args.preview_limit : 200);
             const items = Array.isArray(parsed)
               ? parsed
-              : Array.isArray(parsed.matches)
-                ? parsed.matches
-                : Array.isArray(parsed.symbols)
-                  ? parsed.symbols
-                  : [];
-            const count = typeof parsed.count === "number" ? parsed.count : items.length;
+              : extractSearchLikeItems(parsed);
+            const count = extractSearchLikeCount(parsed, items);
             const cursor = makeCursor(tool.name, items, count);
             const page = readCursorPage(tool.name, cursor, pageSize);
             if (!page.ok) {
@@ -1652,6 +2113,37 @@ function preRegisterTools(): void {
                 type: "text",
                 text: JSON.stringify({
                   matches: page.data.items,
+                  count,
+                  page: page.data.page,
+                  next: page.data.page.has_more
+                    ? { tool: "expand_result", arguments: { cursor: page.data.page.next_cursor, page_size: pageSize } }
+                    : null,
+                }),
+              }],
+            };
+          } catch {
+            return backendResult;
+          }
+        }
+
+        if (tool.name === "references") {
+          try {
+            const parsed = JSON.parse(backendResult.content[0].text);
+            const items = extractReferencesItems(parsed);
+            const count = extractReferencesCount(parsed, items);
+            const pageSize = typeof args.page_size === "number"
+              ? args.page_size
+              : (typeof args.preview_limit === "number" ? args.preview_limit : 200);
+            const cursor = makeCursor(tool.name, items, count);
+            const page = readCursorPage(tool.name, cursor, pageSize);
+            if (!page.ok) {
+              return { content: [{ type: "text", text: JSON.stringify(page.data) }] };
+            }
+            return {
+              content: [{
+                type: "text",
+                text: JSON.stringify({
+                  references: page.data.items,
                   count,
                   page: page.data.page,
                   next: page.data.page.has_more
