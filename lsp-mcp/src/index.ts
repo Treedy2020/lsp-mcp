@@ -18,6 +18,7 @@ import { z } from "zod";
 import { createRequire } from "module";
 import * as fs from "fs";
 import * as path from "path";
+import * as net from "net";
 import { execSync, spawnSync } from "child_process";
 import { createHash, randomBytes } from "crypto";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
@@ -59,6 +60,15 @@ const CURSOR_TTL_MS = 10 * 60 * 1000;
 const CURSOR_MAX_ENTRIES = 100;
 const CURSOR_SECRET = randomBytes(16).toString("hex");
 let vueBundledDepsMissingCache: boolean | null = null;
+const VUE_STRICT_SEMANTIC = (process.env.LSP_MCP_VUE_STRICT_SEMANTIC ?? "true").toLowerCase() !== "false";
+const VUE_FORCE_MISSING_SEMANTIC_DEPS = (process.env.LSP_MCP_VUE_FORCE_MISSING_SEMANTIC_DEPS ?? "false").toLowerCase() === "true";
+const SINGLETON_BACKEND_ENABLED = (process.env.LSP_MCP_SINGLETON_BACKEND ?? "true").toLowerCase() !== "false";
+const SINGLETON_BACKEND_PROXY_ENABLED = (process.env.LSP_MCP_SINGLETON_BACKEND_PROXY ?? "true").toLowerCase() !== "false";
+const backendSingletonLocks = new Map<string, string>();
+const BACKEND_LOCK_DIR = process.env.LSP_MCP_BACKEND_LOCK_DIR || path.join("/tmp", "lsp-mcp-locks");
+let singletonRpcServer: net.Server | null = null;
+let singletonRpcEndpoint: { host: string; port: number } | null = null;
+let singletonRpcStarting = false;
 
 // Create MCP server
 const server = new McpServer({
@@ -944,6 +954,7 @@ function findDeclarationInFile(content: string, identifier: string): { line: num
 }
 
 function bundledVueSemanticDepsMissing(): boolean {
+  if (VUE_FORCE_MISSING_SEMANTIC_DEPS) return true;
   if (vueBundledDepsMissingCache !== null) return vueBundledDepsMissingCache;
   try {
     const bundledPkgPath = require.resolve("../dist/bundled/vue/package.json");
@@ -956,6 +967,28 @@ function bundledVueSemanticDepsMissing(): boolean {
     vueBundledDepsMissingCache = false;
     return false;
   }
+}
+
+function buildVueMissingDepsErrorResponse(
+  toolName: string,
+  workspacePath?: string | null
+): { content: Array<{ type: "text"; text: string }> } {
+  const installRoot = workspacePath || "<your-vue-project-root>";
+  return {
+    content: [{
+      type: "text",
+      text: JSON.stringify({
+        error: `Vue semantic tool '${toolName}' is unavailable because required dependencies are missing.`,
+        code: "VUE_SEMANTIC_DEPS_MISSING",
+        required_packages: ["typescript", "@vue/language-server"],
+        install_example: `cd ${installRoot} && pnpm add -D typescript @vue/language-server`,
+        notes: [
+          "Default behavior is strict to avoid hidden fallback confusion.",
+          "Set LSP_MCP_VUE_STRICT_SEMANTIC=false to allow degraded fallback responses.",
+        ],
+      }),
+    }],
+  };
 }
 
 function buildVueDiagnosticsFallback(args: Record<string, unknown>): { content: Array<{ type: "text"; text: string }> } {
@@ -973,6 +1006,380 @@ function buildVueDiagnosticsFallback(args: Record<string, unknown>): { content: 
       }),
     }],
   };
+}
+
+function resolveWorkspaceForLock(fileOrPath?: string | null): string | null {
+  const candidate = fileOrPath || activeWorkspacePath;
+  if (!candidate) return null;
+  const resolved = path.isAbsolute(candidate) ? candidate : path.resolve(candidate);
+  if (!fs.existsSync(resolved)) {
+    return path.dirname(resolved);
+  }
+  const stat = fs.statSync(resolved);
+  return stat.isDirectory() ? resolved : path.dirname(resolved);
+}
+
+function isProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function updateOwnedLockMetadata(): void {
+  for (const lockPath of backendSingletonLocks.values()) {
+    try {
+      if (!fs.existsSync(lockPath)) continue;
+      const raw = fs.readFileSync(lockPath, "utf-8");
+      const payload = JSON.parse(raw);
+      if (payload?.pid !== process.pid) continue;
+      const nextPayload = {
+        ...payload,
+        rpc_host: singletonRpcEndpoint?.host ?? null,
+        rpc_port: singletonRpcEndpoint?.port ?? null,
+      };
+      fs.writeFileSync(lockPath, `${JSON.stringify(nextPayload, null, 2)}\n`, "utf-8");
+    } catch {
+      // Best-effort metadata refresh.
+    }
+  }
+}
+
+function ensureSingletonRpcServer(): { host: string; port: number } | null {
+  if (singletonRpcEndpoint && singletonRpcServer) return singletonRpcEndpoint;
+  if (singletonRpcStarting) return singletonRpcEndpoint;
+  singletonRpcStarting = true;
+  try {
+    fs.mkdirSync(BACKEND_LOCK_DIR, { recursive: true });
+
+    const server = net.createServer((socket) => {
+      socket.setEncoding("utf-8");
+      let buffer = "";
+      socket.on("data", (chunk) => {
+        buffer += chunk;
+        let idx = buffer.indexOf("\n");
+        while (idx >= 0) {
+          const line = buffer.slice(0, idx).trim();
+          buffer = buffer.slice(idx + 1);
+          if (line.length > 0) {
+            handleSingletonRpcLine(line)
+              .then((reply) => socket.write(`${JSON.stringify(reply)}\n`))
+              .catch((error) => socket.write(`${JSON.stringify({ ok: false, error: String(error) })}\n`));
+          }
+          idx = buffer.indexOf("\n");
+        }
+      });
+    });
+    server.on("error", () => {
+      // Disable RPC server for this process if socket cannot be established.
+      singletonRpcServer = null;
+      singletonRpcEndpoint = null;
+      singletonRpcStarting = false;
+    });
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address();
+      if (addr && typeof addr === "object") {
+        singletonRpcEndpoint = { host: "127.0.0.1", port: addr.port };
+        updateOwnedLockMetadata();
+      }
+      singletonRpcStarting = false;
+    });
+    singletonRpcServer = server;
+    return singletonRpcEndpoint;
+  } catch {
+    singletonRpcStarting = false;
+    return null;
+  }
+}
+
+async function handleSingletonRpcLine(line: string): Promise<any> {
+  let req: any;
+  try {
+    req = JSON.parse(line);
+  } catch {
+    return { ok: false, error: "Invalid RPC payload" };
+  }
+  if (req?.action !== "call_tool") {
+    return { ok: false, error: "Unsupported RPC action" };
+  }
+  const language = String(req.language || "");
+  const tool = String(req.tool || "");
+  const args = (req.args && typeof req.args === "object") ? req.args as Record<string, unknown> : {};
+  const workspace = typeof req.workspace === "string" ? req.workspace : null;
+  if (!language || !tool) {
+    return { ok: false, error: "Missing language/tool in RPC request" };
+  }
+
+  try {
+    if (!startedBackends.has(language)) {
+      await backendManager.getBackend(language);
+      startedBackends.add(language);
+    }
+    if (workspace) {
+      try {
+        await backendManager.callTool(language, "switch_workspace", { path: workspace });
+      } catch {
+        // Best-effort workspace sync for shared backend calls.
+      }
+    }
+    const result = await backendManager.callTool(language, tool, args);
+    return { ok: true, result };
+  } catch (error) {
+    return { ok: false, error: String(error) };
+  }
+}
+
+async function callRemoteBackendTool(
+  host: string,
+  port: number,
+  language: string,
+  tool: string,
+  args: Record<string, unknown>,
+  workspace?: string | null
+): Promise<{ content: Array<{ type: "text"; text: string }> }> {
+  const tryOnce = (): Promise<{ content: Array<{ type: "text"; text: string }> }> => new Promise((resolve, reject) => {
+    const client = net.createConnection(port, host);
+    let settled = false;
+    let buffer = "";
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      client.destroy();
+      reject(new Error(`RPC call timeout for ${language}.${tool}`));
+    }, 15000);
+
+    const done = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
+
+    client.setEncoding("utf-8");
+    client.on("connect", () => {
+      client.write(`${JSON.stringify({ action: "call_tool", language, tool, args, workspace })}\n`);
+    });
+    client.on("data", (chunk) => {
+      buffer += chunk;
+      const idx = buffer.indexOf("\n");
+      if (idx < 0) return;
+      const line = buffer.slice(0, idx).trim();
+      done(() => {
+        try {
+          const parsed = JSON.parse(line);
+          if (!parsed?.ok) {
+            reject(new Error(parsed?.error || `Remote ${language}.${tool} failed`));
+            return;
+          }
+          resolve(parsed.result as { content: Array<{ type: "text"; text: string }> });
+        } catch (error) {
+          reject(error);
+        } finally {
+          client.end();
+        }
+      });
+    });
+    client.on("error", (error) => done(() => reject(error)));
+  });
+  let lastError: unknown = null;
+  for (let i = 0; i < 6; i++) {
+    try {
+      return await tryOnce();
+    } catch (error) {
+      lastError = error;
+      const message = String(error);
+      const retryable = message.includes("ENOENT") || message.includes("ECONNREFUSED");
+      if (!retryable || i === 5) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+function releaseBackendSingletonLocks(): void {
+  for (const [key, lockPath] of backendSingletonLocks.entries()) {
+    try {
+      if (!fs.existsSync(lockPath)) {
+        backendSingletonLocks.delete(key);
+        continue;
+      }
+      const raw = fs.readFileSync(lockPath, "utf-8");
+      const payload = JSON.parse(raw);
+      if (payload?.pid === process.pid) {
+        fs.unlinkSync(lockPath);
+      }
+    } catch {
+      // Best-effort cleanup.
+    } finally {
+      backendSingletonLocks.delete(key);
+    }
+  }
+}
+
+function shutdownSingletonRpcServer(): void {
+  if (!singletonRpcServer) return;
+  singletonRpcServer.close();
+  singletonRpcServer = null;
+  singletonRpcEndpoint = null;
+  singletonRpcStarting = false;
+}
+
+type SingletonGuardResult =
+  | { ok: true; proxyHost?: string; proxyPort?: number; ownerPid?: number }
+  | { ok: false; response: { content: Array<{ type: "text"; text: string }> } };
+
+async function ensureBackendSingleton(
+  language: string,
+  workspacePath?: string | null
+): Promise<SingletonGuardResult> {
+  if (!SINGLETON_BACKEND_ENABLED) return { ok: true };
+  const workspace = resolveWorkspaceForLock(workspacePath);
+  if (!workspace) return { ok: true };
+
+  const key = `${language}:${workspace}`;
+  if (backendSingletonLocks.has(key)) {
+    return { ok: true };
+  }
+
+  try {
+    fs.mkdirSync(BACKEND_LOCK_DIR, { recursive: true });
+  } catch {
+    // If lock directory cannot be created, avoid blocking functionality.
+    return { ok: true };
+  }
+
+  const hash = createHash("sha1").update(key).digest("hex").slice(0, 16);
+  const lockPath = path.join(BACKEND_LOCK_DIR, `${hash}.json`);
+  const rpcEndpoint = ensureSingletonRpcServer();
+  const payload = {
+    pid: process.pid,
+    language,
+    workspace,
+    rpc_host: rpcEndpoint?.host ?? null,
+    rpc_port: rpcEndpoint?.port ?? null,
+    created_at: new Date().toISOString(),
+  };
+
+  const tryClaim = (): boolean => {
+    try {
+      const fd = fs.openSync(lockPath, "wx");
+      fs.writeFileSync(fd, JSON.stringify(payload, null, 2));
+      fs.closeSync(fd);
+      backendSingletonLocks.set(key, lockPath);
+      return true;
+    } catch (error) {
+      const message = String(error);
+      if (!message.includes("EEXIST")) return false;
+      return false;
+    }
+  };
+
+  if (tryClaim()) return { ok: true };
+
+  if (fs.existsSync(lockPath)) {
+    try {
+      const raw = fs.readFileSync(lockPath, "utf-8");
+      const owner = JSON.parse(raw);
+      if (owner?.pid === process.pid) {
+        backendSingletonLocks.set(key, lockPath);
+        return { ok: true };
+      }
+      if (!isProcessAlive(Number(owner?.pid))) {
+        fs.unlinkSync(lockPath);
+        if (tryClaim()) return { ok: true };
+      } else if (SINGLETON_BACKEND_PROXY_ENABLED) {
+        for (let i = 0; i < 6; i++) {
+          try {
+            const latestRaw = fs.readFileSync(lockPath, "utf-8");
+            const latest = JSON.parse(latestRaw);
+            if (
+              typeof latest?.rpc_host === "string" &&
+              Number.isFinite(Number(latest?.rpc_port)) &&
+              Number(latest.rpc_port) > 0
+            ) {
+              return {
+                ok: true,
+                proxyHost: latest.rpc_host,
+                proxyPort: Number(latest.rpc_port),
+                ownerPid: Number(latest.pid) || undefined,
+              };
+            }
+          } catch {
+            // keep waiting
+          }
+          await new Promise((r) => setTimeout(r, 50));
+        }
+      }
+
+      if (
+        SINGLETON_BACKEND_PROXY_ENABLED &&
+        typeof owner?.rpc_host === "string" &&
+        Number.isFinite(Number(owner?.rpc_port)) &&
+        Number(owner.rpc_port) > 0
+      ) {
+        return {
+          ok: true,
+          proxyHost: owner.rpc_host,
+          proxyPort: Number(owner.rpc_port),
+          ownerPid: Number(owner.pid) || undefined,
+        };
+      } else {
+        return {
+          ok: false,
+          response: {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                error: `Backend singleton lock is already held for ${language} in this workspace.`,
+                code: "BACKEND_SINGLETON_LOCKED",
+                language,
+                workspace,
+                owner_pid: owner.pid,
+                lock_path: lockPath,
+                hint: "Close the other CLI session, or set LSP_MCP_SINGLETON_BACKEND_PROXY=true to forward calls.",
+              }),
+            }],
+          },
+        };
+      }
+    } catch {
+      // If lock file is corrupted, overwrite it as stale.
+      try {
+        fs.unlinkSync(lockPath);
+        if (tryClaim()) return { ok: true };
+      } catch {
+        // fallthrough
+      }
+    }
+  }
+
+  if (backendSingletonLocks.has(key)) return { ok: true };
+  return {
+    ok: false,
+    response: {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          error: `Unable to acquire backend singleton lock for ${language}.`,
+          code: "BACKEND_SINGLETON_LOCK_FAILED",
+          language,
+          workspace,
+          lock_path: lockPath,
+        }),
+      }],
+    },
+  };
+}
+
+function isVueFragileToolName(toolName: string): boolean {
+  return toolName === "symbols" || toolName === "hover" || toolName === "definition" || toolName === "references";
+}
+
+function isVueSemanticToolName(toolName: string): boolean {
+  return toolName === "hover" || toolName === "definition" || toolName === "references" || toolName === "diagnostics";
 }
 
 function pickVueFallbackIdentifier(vueContent: string, args: Record<string, unknown>): string | null {
@@ -1552,12 +1959,38 @@ function preRegisterTools(): void {
                  ? args.query.trim()
                  : null;
              const startedEnabled = enabledLanguages.filter((lang) => startedBackends.has(lang));
+             const lockByLanguage = new Map<string, Promise<SingletonGuardResult>>();
+             const getSingletonLock = (lang: string): Promise<SingletonGuardResult> => {
+               const existing = lockByLanguage.get(lang);
+               if (existing) return existing;
+               const next = ensureBackendSingleton(lang, activeWorkspacePath);
+               lockByLanguage.set(lang, next);
+               return next;
+             };
+             const callLanguageTool = async (
+               lang: string,
+               toolName: string,
+               callArgs: Record<string, unknown>
+             ): Promise<{ content: Array<{ type: "text"; text: string }> }> => {
+               const lock = await getSingletonLock(lang);
+               if (!lock.ok) {
+                 throw new Error(`Singleton lock unavailable for ${lang}`);
+               }
+               if (lock.proxyHost && lock.proxyPort) {
+                 return callRemoteBackendTool(lock.proxyHost, lock.proxyPort, lang, toolName, callArgs, activeWorkspacePath);
+               }
+               return backendManager.callTool(lang, toolName, callArgs);
+             };
              const startAndSyncBackend = async (lang: string) => {
+               const lock = await getSingletonLock(lang);
+               if (!lock.ok) return false;
+               if (lock.proxyHost && lock.proxyPort) return true;
                await backendManager.getBackend(lang);
                startedBackends.add(lang);
                if (activeWorkspacePath) {
                  await backendManager.callTool(lang, "switch_workspace", { path: activeWorkspacePath });
                }
+               return true;
              };
 
              if (tool.name === "workspace_symbol") {
@@ -1588,18 +2021,20 @@ function preRegisterTools(): void {
              const results = [];
              let totalCount = 0;
              for (const lang of enabledLanguages) {
-                 if (startedBackends.has(lang)) {
+                 const lock = await getSingletonLock(lang);
+                 if (!lock.ok) continue;
+                 if ((lock.proxyHost && lock.proxyPort) || startedBackends.has(lang)) {
                      try {
                          let parsed: any;
                          try {
-                           const res = await backendManager.callTool(lang, tool.name, backendArgs);
+                           const res = await callLanguageTool(lang, tool.name, backendArgs);
                            parsed = JSON.parse(res.content[0].text);
                          } catch {
                            if (!workspaceQuery) {
                              continue;
                            }
                            // Fallback for backends that don't support workspace_symbol.
-                           const fallbackRes = await backendManager.callTool(lang, "search", {
+                           const fallbackRes = await callLanguageTool(lang, "search", {
                              pattern: workspaceQuery,
                            });
                            parsed = JSON.parse(fallbackRes.content[0].text);
@@ -1608,7 +2043,7 @@ function preRegisterTools(): void {
                          let items = extractSearchLikeItems(parsed);
                          if (items.length === 0 && workspaceQuery) {
                            // Some backends may return empty workspace symbols even with valid query.
-                           const fallbackRes = await backendManager.callTool(lang, "search", {
+                           const fallbackRes = await callLanguageTool(lang, "search", {
                              pattern: workspaceQuery,
                            });
                            const fallbackParsed = JSON.parse(fallbackRes.content[0].text);
@@ -1687,8 +2122,27 @@ function preRegisterTools(): void {
           };
         }
 
+        const isVueFragileTool = language === "vue" && isVueFragileToolName(tool.name);
+        const isVueSemanticTool = language === "vue" && isVueSemanticToolName(tool.name);
+        const isVueFallbackCapableTool = language === "vue" && (isVueFragileToolName(tool.name) || tool.name === "diagnostics");
+        const lockWorkspace = activeWorkspacePath || absPath;
+        const singletonLock = await ensureBackendSingleton(language, lockWorkspace);
+        if (!singletonLock.ok) {
+          return singletonLock.response;
+        }
+        const proxyHost = singletonLock.proxyHost;
+        const proxyPort = singletonLock.proxyPort;
+        const hasProxy = !!proxyHost && !!proxyPort;
+        const missingVueToolDeps = !hasProxy && isVueFallbackCapableTool && bundledVueSemanticDepsMissing();
+        const callBackendTool = (toolName: string, backendArgs: Record<string, unknown>) => {
+          if (proxyHost && proxyPort) {
+            return callRemoteBackendTool(proxyHost, proxyPort, language, toolName, backendArgs, activeWorkspacePath || lockWorkspace);
+          }
+          return backendManager.callTool(language, toolName, backendArgs);
+        };
+
         // Auto-start backend if not started
-        if (!startedBackends.has(language)) {
+        if (!hasProxy && !startedBackends.has(language) && !missingVueToolDeps) {
           console.error(`[lsp-mcp] Auto-starting ${language} backend for unified ${tool.name}...`);
           try {
             await backendManager.getBackend(language);
@@ -1715,7 +2169,7 @@ function preRegisterTools(): void {
             
             return {
               content: [{ type: "text", text: JSON.stringify({ 
-                  error: `Failed to start ${language} backend`, 
+                  error: `Failed to start ${language} backend`,
                   details: msg,
                   hint: hint
               }, null, 2) }],
@@ -1725,7 +2179,13 @@ function preRegisterTools(): void {
 
         // Capability Check: check if the backend actually supports this tool
         // Special case for composite tools like summarize_file (they use other tools internally)
-        if (tool.name !== "summarize_file" && tool.name !== "read_file_with_hints" && tool.name !== "peek_definition") {
+        if (
+          !hasProxy &&
+          !missingVueToolDeps &&
+          tool.name !== "summarize_file" &&
+          tool.name !== "read_file_with_hints" &&
+          tool.name !== "peek_definition"
+        ) {
           const availableTools = await backendManager.getTools(language);
           const supportsTool = availableTools.some(t => t.name === tool.name);
 
@@ -1751,7 +2211,7 @@ function preRegisterTools(): void {
             // Call symbols tool to get the data
             const symbolsArgs = { ...(args as Record<string, unknown>) };
             delete symbolsArgs.max_symbols;
-            const result = await backendManager.callTool(language, "symbols", symbolsArgs);
+            const result = await callBackendTool("symbols", symbolsArgs);
             const parsed = JSON.parse(result.content[0].text);
             
             if (parsed.error) {
@@ -1810,7 +2270,7 @@ function preRegisterTools(): void {
         if (tool.name === "peek_definition") {
           try {
             // 1. Call definition tool
-            const result = await backendManager.callTool(language, "definition", args as Record<string, unknown>);
+            const result = await callBackendTool("definition", args as Record<string, unknown>);
             const parsed = JSON.parse(result.content[0].text);
             
             if (parsed.error) {
@@ -1925,7 +2385,7 @@ function preRegisterTools(): void {
             delete hintsArgs.cursor;
             let hints: any[] = [];
             try {
-              const result = await backendManager.callTool(language, "inlay_hints", hintsArgs);
+              const result = await callBackendTool("inlay_hints", hintsArgs);
               const parsed = JSON.parse(result.content[0].text);
               if (parsed?.error) {
                 const errorText = typeof parsed.error === "string" ? parsed.error : JSON.stringify(parsed.error);
@@ -2046,22 +2506,27 @@ function preRegisterTools(): void {
           delete backendArgs.cursor;
         }
 
-        if (language === "vue" && tool.name === "diagnostics" && bundledVueSemanticDepsMissing()) {
-          return buildVueDiagnosticsFallback(args as Record<string, unknown>);
-        }
-
         // Call the actual backend tool
-        const isVueFragileTool =
-          language === "vue" && (tool.name === "symbols" || tool.name === "hover" || tool.name === "definition" || tool.name === "references");
-        if (isVueFragileTool && bundledVueSemanticDepsMissing() && typeof filePath === "string") {
-          const fallback = buildVueFallbackResponse(tool.name, filePath, backendArgs, activeWorkspacePath);
-          if (fallback) {
-            return fallback;
+        if (missingVueToolDeps) {
+          if (VUE_STRICT_SEMANTIC && isVueSemanticTool) {
+            return buildVueMissingDepsErrorResponse(tool.name, activeWorkspacePath);
+          }
+          if (tool.name === "diagnostics") {
+            return buildVueDiagnosticsFallback(args as Record<string, unknown>);
+          }
+          if (isVueFragileTool && typeof filePath === "string") {
+            const fallback = buildVueFallbackResponse(tool.name, filePath, backendArgs, activeWorkspacePath);
+            if (fallback) {
+              return fallback;
+            }
+          }
+          if (isVueSemanticTool) {
+            return buildVueMissingDepsErrorResponse(tool.name, activeWorkspacePath);
           }
         }
         let backendResult;
         try {
-          const callPromise = backendManager.callTool(language, tool.name, backendArgs);
+          const callPromise = callBackendTool(tool.name, backendArgs);
           backendResult = isVueFragileTool
             ? await withTimeout(callPromise, 1200, `Vue ${tool.name}`)
             : await callPromise;
@@ -2257,7 +2722,16 @@ function preRegisterTools(): void {
           inputSchema: tool.schema,
         },
         async (args) => {
-          if (!startedBackends.has(language)) {
+          const lockWorkspace = activeWorkspacePath || (args.file as string) || (args.path as string) || null;
+          const singletonLock = await ensureBackendSingleton(language, lockWorkspace);
+          if (!singletonLock.ok) {
+            return singletonLock.response;
+          }
+          const proxyHost = singletonLock.proxyHost;
+          const proxyPort = singletonLock.proxyPort;
+          const hasProxy = !!proxyHost && !!proxyPort;
+
+          if (!hasProxy && !startedBackends.has(language)) {
             await backendManager.getBackend(language);
             startedBackends.add(language);
 
@@ -2280,6 +2754,9 @@ function preRegisterTools(): void {
             }
           }
 
+          if (proxyHost && proxyPort) {
+            return callRemoteBackendTool(proxyHost, proxyPort, language, tool.name, backendArgs, activeWorkspacePath || lockWorkspace);
+          }
           return backendManager.callTool(language, tool.name, backendArgs);
         }
       );
@@ -2305,7 +2782,16 @@ function preRegisterTools(): void {
           inputSchema: tool.schema,
         },
         async (args) => {
-          if (!startedBackends.has(language)) {
+          const lockWorkspace = activeWorkspacePath || (args.file as string) || (args.path as string) || null;
+          const singletonLock = await ensureBackendSingleton(language, lockWorkspace);
+          if (!singletonLock.ok) {
+            return singletonLock.response;
+          }
+          const proxyHost = singletonLock.proxyHost;
+          const proxyPort = singletonLock.proxyPort;
+          const hasProxy = !!proxyHost && !!proxyPort;
+
+          if (!hasProxy && !startedBackends.has(language)) {
             await backendManager.getBackend(language);
             startedBackends.add(language);
 
@@ -2318,6 +2804,9 @@ function preRegisterTools(): void {
                 console.error(`[lsp-mcp] Failed to sync workspace to ${language}:`, syncError);
               }
             }
+          }
+          if (proxyHost && proxyPort) {
+            return callRemoteBackendTool(proxyHost, proxyPort, language, tool.name, args as Record<string, unknown>, activeWorkspacePath || lockWorkspace);
           }
           return backendManager.callTool(language, tool.name, args as Record<string, unknown>);
         }
@@ -2342,9 +2831,13 @@ async function gracefulShutdown(signal: string): Promise<void> {
   try {
     await backendManager.shutdown();
     await server.close();
+    releaseBackendSingletonLocks();
+    shutdownSingletonRpcServer();
     console.error("[lsp-mcp] Shutdown complete");
     process.exit(0);
   } catch (error) {
+    releaseBackendSingletonLocks();
+    shutdownSingletonRpcServer();
     console.error("[lsp-mcp] Error during shutdown:", error);
     process.exit(1);
   }
@@ -2352,6 +2845,10 @@ async function gracefulShutdown(signal: string): Promise<void> {
 
 process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+process.on("exit", () => {
+  releaseBackendSingletonLocks();
+  shutdownSingletonRpcServer();
+});
 
 // ============================================================================ 
 // Main
