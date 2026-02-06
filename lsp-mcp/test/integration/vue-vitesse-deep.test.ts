@@ -18,8 +18,10 @@ describe("Vue Integration Deep (Vitesse)", () => {
       env: {
         ...process.env,
         LSP_MCP_PYTHON_ENABLED: "false",
-        LSP_MCP_TYPESCRIPT_ENABLED: "false",
+        LSP_MCP_TYPESCRIPT_ENABLED: "true",
         LSP_MCP_VUE_ENABLED: "true",
+        LSP_MCP_VUE_STRICT_SEMANTIC: "false",
+        LSP_MCP_VUE_FORCE_MISSING_SEMANTIC_DEPS: "true",
       },
     });
     await client.callTool("switch_workspace", { path: WORKSPACE_ROOT });

@@ -1,0 +1,55 @@
+import { describe, it, expect, beforeAll, afterAll } from "bun:test";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import { McpTestClient } from "../utils/mcp-client.js";
+
+const SERVER_PATH = path.resolve(__dirname, "../../src/index.ts");
+const TEST_DIR = path.join(os.tmpdir(), `lsp-mcp-vue-strict-${Date.now()}`);
+
+describe("Vue Strict Semantic Dependencies", () => {
+  let client: McpTestClient;
+  let vueFile: string;
+
+  beforeAll(async () => {
+    fs.mkdirSync(path.join(TEST_DIR, "src"), { recursive: true });
+    fs.writeFileSync(path.join(TEST_DIR, "package.json"), JSON.stringify({ name: "vue-strict-fixture", version: "0.0.0" }));
+    vueFile = path.join(TEST_DIR, "src", "App.vue");
+    fs.writeFileSync(
+      vueFile,
+      `<script setup lang="ts">\n` +
+      `const name = "world"\n` +
+      `</script>\n\n` +
+      `<template>\n` +
+      `  <div>{{ name }}</div>\n` +
+      `</template>\n`,
+    );
+
+    client = new McpTestClient(SERVER_PATH, {
+      env: {
+        ...process.env,
+        LSP_MCP_PYTHON_ENABLED: "false",
+        LSP_MCP_TYPESCRIPT_ENABLED: "false",
+        LSP_MCP_VUE_ENABLED: "true",
+        LSP_MCP_VUE_FORCE_MISSING_SEMANTIC_DEPS: "true",
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 1000));
+  });
+
+  afterAll(() => {
+    client.kill();
+    fs.rmSync(TEST_DIR, { recursive: true, force: true });
+  });
+
+  it("should return actionable install guidance in strict mode", async () => {
+    await client.callTool("switch_workspace", { path: TEST_DIR });
+    const result = await client.callTool("hover", { file: vueFile, line: 2, column: 8 });
+
+    expect(result.code).toBe("VUE_SEMANTIC_DEPS_MISSING");
+    expect(result.required_packages).toContain("typescript");
+    expect(result.required_packages).toContain("@vue/language-server");
+    expect(String(result.install_example)).toContain("pnpm add -D typescript @vue/language-server");
+  });
+});

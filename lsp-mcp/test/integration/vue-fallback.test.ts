@@ -32,6 +32,8 @@ describe("Vue Fallback", () => {
         LSP_MCP_PYTHON_ENABLED: "false",
         LSP_MCP_TYPESCRIPT_ENABLED: "false",
         LSP_MCP_VUE_ENABLED: "true",
+        LSP_MCP_VUE_STRICT_SEMANTIC: "false",
+        LSP_MCP_VUE_FORCE_MISSING_SEMANTIC_DEPS: "true",
       },
     });
 
