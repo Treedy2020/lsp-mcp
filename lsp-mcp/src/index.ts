@@ -950,6 +950,10 @@ server.registerTool(
       payload.resolved_workspace = page.data.summary?.resolved_workspace ?? null;
       payload.resolved_workspaces = page.data.summary?.resolved_workspaces ?? null;
     }
+    if (page.tool === "diagnostics" || page.tool === "references") {
+      payload.resolved_language = page.data.summary?.resolved_language ?? null;
+      payload.resolved_workspace = page.data.summary?.resolved_workspace ?? null;
+    }
     if (page.tool === "project_structure" || page.tool === "summarize_file" || page.tool === "read_file_with_hints") {
       payload.lines = page.data.items;
     }
@@ -2568,11 +2572,11 @@ function preRegisterTools(): void {
                 count: page.data.count,
                 summary: page.data.summary,
                 resolved_language:
-                  tool.name === "search" || tool.name === "workspace_symbol"
+                  tool.name === "search" || tool.name === "workspace_symbol" || tool.name === "references" || tool.name === "diagnostics"
                     ? (page.data.summary?.resolved_language ?? null)
                     : undefined,
                 resolved_workspace:
-                  tool.name === "search" || tool.name === "workspace_symbol"
+                  tool.name === "search" || tool.name === "workspace_symbol" || tool.name === "references" || tool.name === "diagnostics"
                     ? (page.data.summary?.resolved_workspace ?? null)
                     : undefined,
                 resolved_workspaces:
@@ -3350,7 +3354,10 @@ function preRegisterTools(): void {
             const pageSize = typeof args.page_size === "number"
               ? args.page_size
               : (typeof args.preview_limit === "number" ? args.preview_limit : 200);
-            const cursor = makeCursor(tool.name, items, count);
+            const cursor = makeCursor(tool.name, items, count, {
+              resolved_language: language,
+              resolved_workspace: resolvedWorkspace,
+            });
             const page = readCursorPage(tool.name, cursor, pageSize);
             if (!page.ok) {
               return { content: [{ type: "text", text: JSON.stringify(page.data) }] };
@@ -3361,6 +3368,8 @@ function preRegisterTools(): void {
                 text: JSON.stringify({
                   references: page.data.items,
                   count,
+                  resolved_language: language,
+                  resolved_workspace: resolvedWorkspace,
                   page: page.data.page,
                   next: page.data.page.has_more
                     ? { tool: "expand_result", arguments: { cursor: page.data.page.next_cursor, page_size: pageSize } }
@@ -3405,6 +3414,8 @@ function preRegisterTools(): void {
                   type: "text",
                   text: JSON.stringify({
                     count: diagnostics.length,
+                    resolved_language: language,
+                    resolved_workspace: resolvedWorkspace,
                     summary: {
                       by_severity: severityCounts,
                       by_file: fileCounts,
@@ -3423,6 +3434,8 @@ function preRegisterTools(): void {
             }
 
             const summary = {
+              resolved_language: language,
+              resolved_workspace: resolvedWorkspace,
               by_severity: severityCounts,
               by_file: fileCounts,
             };
@@ -3437,6 +3450,8 @@ function preRegisterTools(): void {
                 text: JSON.stringify({
                   diagnostics: page.data.items,
                   count: diagnostics.length,
+                  resolved_language: language,
+                  resolved_workspace: resolvedWorkspace,
                   summary,
                   page: page.data.page,
                   next: page.data.page.has_more

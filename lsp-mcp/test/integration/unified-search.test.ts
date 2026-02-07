@@ -141,6 +141,8 @@ describe("Unified Search", () => {
     expect(expanded.tool).toBe("search");
     expect(Array.isArray(expanded.items)).toBe(true);
     expect(expanded.page.offset).toBe(1);
+    expect(expanded.resolved_language).toBe("typescript");
+    expect(expanded.resolved_workspace).toBe(TEST_DIR);
   });
 
   it("should reject invalid cursor signatures", async () => {
@@ -193,6 +195,7 @@ describe("Unified Search", () => {
 
   it("should paginate references in compact mode", async () => {
     await client.callTool("switch_workspace", { path: TEST_DIR });
+    await client.callTool("switch_workspace_for_language", { language: "typescript", path: TEST_DIR });
     const file = path.join(TEST_DIR, "src", "index.ts");
     const first = await client.callTool("references", {
       file,
@@ -205,6 +208,8 @@ describe("Unified Search", () => {
     expect(first.references.length).toBe(1);
     expect(first.count).toBeGreaterThan(1);
     expect(first.next?.tool).toBe("expand_result");
+    expect(first.resolved_language).toBe("typescript");
+    expect(first.resolved_workspace).toBe(TEST_DIR);
 
     const second = await client.callTool("expand_result", {
       cursor: first.next.arguments.cursor,
@@ -213,10 +218,13 @@ describe("Unified Search", () => {
     expect(second.tool).toBe("references");
     expect(Array.isArray(second.references)).toBe(true);
     expect(second.references.length).toBe(1);
+    expect(second.resolved_language).toBe("typescript");
+    expect(second.resolved_workspace).toBe(TEST_DIR);
   });
 
   it("should return diagnostics summary/preview metadata", async () => {
     await client.callTool("switch_workspace", { path: TEST_DIR });
+    await client.callTool("switch_workspace_for_language", { language: "typescript", path: TEST_DIR });
     const result = await client.callTool("diagnostics", {
       path: TEST_DIR,
       preview_limit: 1,
@@ -226,5 +234,7 @@ describe("Unified Search", () => {
     expect(result.count).toBeDefined();
     expect(result.summary).toBeDefined();
     expect(result.preview).toBeDefined();
+    expect(result.resolved_language).toBe("typescript");
+    expect(result.resolved_workspace).toBe(TEST_DIR);
   });
 });
