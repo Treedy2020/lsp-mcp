@@ -23,6 +23,20 @@ describe("Meta Tools", () => {
     expect(result.backends).toBeDefined();
     expect(result.backends.find((b: any) => b.name === "python")).toBeDefined();
     expect(result.backends.find((b: any) => b.name === "typescript")).toBeDefined();
+    expect(result.backend_packages).toBeDefined();
+    expect(Array.isArray(result.backend_packages)).toBe(true);
+
+    const pythonBackend = result.backends.find((b: any) => b.name === "python");
+    expect(pythonBackend.package).toContain("@latest");
+    expect(["npx", "uvx"]).toContain(pythonBackend.resolver);
+
+    const typescriptBackend = result.backends.find((b: any) => b.name === "typescript");
+    expect(typescriptBackend.package).toBe("@treedy/typescript-lsp-mcp@latest");
+    expect(typescriptBackend.resolver).toBe("npx");
+
+    const vueBackend = result.backends.find((b: any) => b.name === "vue");
+    expect(vueBackend.package).toBe("@treedy/vue-lsp-mcp@latest");
+    expect(vueBackend.resolver).toBe("npx");
   });
 
   it("should show status", async () => {
@@ -35,6 +49,27 @@ describe("Meta Tools", () => {
     expect(result.workspaces.per_language).toBeDefined();
     expect(result.workspaces.overrides).toBeDefined();
     expect(result.workspaces.resolved).toBeDefined();
+    expect(result.backend_packages).toBeDefined();
+    expect(Array.isArray(result.backend_packages)).toBe(true);
+    expect(result.backend_packages.find((pkg: any) => pkg.language === "typescript")?.package_ref).toBe(
+      "@treedy/typescript-lsp-mcp@latest"
+    );
+  });
+
+  it("should expose package install/update strategy in check_versions", async () => {
+    const result = await client.callTool("check_versions", {});
+    expect(result.backend_packages).toBeDefined();
+    expect(Array.isArray(result.backend_packages)).toBe(true);
+
+    const typescriptPkg = result.backend_packages.find((pkg: any) => pkg.language === "typescript");
+    expect(typescriptPkg.package_ref).toBe("@treedy/typescript-lsp-mcp@latest");
+    expect(typescriptPkg.install_command).toBe("npx --yes @treedy/typescript-lsp-mcp@latest");
+    expect(typescriptPkg.update_command).toBe("npx --yes @treedy/typescript-lsp-mcp@latest");
+    expect(typescriptPkg.default_channel).toBe("latest");
+
+    const vuePkg = result.backend_packages.find((pkg: any) => pkg.language === "vue");
+    expect(vuePkg.package_ref).toBe("@treedy/vue-lsp-mcp@latest");
+    expect(vuePkg.resolver).toBe("npx");
   });
 
   it("should expose workspace overrides and resolved values", async () => {

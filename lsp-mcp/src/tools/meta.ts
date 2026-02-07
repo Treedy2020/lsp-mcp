@@ -29,6 +29,75 @@ try {
  */
 export const statusSchema = {};
 
+type BackendPackageInfo = {
+  language: "python" | "typescript" | "vue";
+  provider: string;
+  package: string;
+  package_ref: string;
+  registry: "npm" | "pypi";
+  resolver: "npx" | "uvx";
+  install_command: string;
+  update_command: string;
+  default_channel: "latest";
+  auto_update_enabled: boolean;
+};
+
+function getBackendPackages(config: Config): BackendPackageInfo[] {
+  const pythonProvider = config.python?.provider || "python-lsp-mcp";
+  const pythonPackage: Omit<BackendPackageInfo, "language" | "provider" | "default_channel" | "auto_update_enabled"> =
+    pythonProvider === "pyright-mcp"
+      ? {
+          package: "@treedy/pyright-mcp",
+          package_ref: "@treedy/pyright-mcp@latest",
+          registry: "npm",
+          resolver: "npx",
+          install_command: "npx --yes @treedy/pyright-mcp@latest",
+          update_command: "npx --yes @treedy/pyright-mcp@latest",
+        }
+      : {
+          package: "python-lsp-mcp",
+          package_ref: "python-lsp-mcp@latest",
+          registry: "pypi",
+          resolver: "uvx",
+          install_command: "uvx --quiet --upgrade python-lsp-mcp",
+          update_command: "uvx --quiet --upgrade python-lsp-mcp",
+        };
+
+  return [
+    {
+      language: "python",
+      provider: pythonProvider,
+      ...pythonPackage,
+      default_channel: "latest",
+      auto_update_enabled: config.autoUpdate,
+    },
+    {
+      language: "typescript",
+      provider: "typescript-lsp-mcp",
+      package: "@treedy/typescript-lsp-mcp",
+      package_ref: "@treedy/typescript-lsp-mcp@latest",
+      registry: "npm",
+      resolver: "npx",
+      install_command: "npx --yes @treedy/typescript-lsp-mcp@latest",
+      update_command: "npx --yes @treedy/typescript-lsp-mcp@latest",
+      default_channel: "latest",
+      auto_update_enabled: config.autoUpdate,
+    },
+    {
+      language: "vue",
+      provider: "vue-lsp-mcp",
+      package: "@treedy/vue-lsp-mcp",
+      package_ref: "@treedy/vue-lsp-mcp@latest",
+      registry: "npm",
+      resolver: "npx",
+      install_command: "npx --yes @treedy/vue-lsp-mcp@latest",
+      update_command: "npx --yes @treedy/vue-lsp-mcp@latest",
+      default_channel: "latest",
+      auto_update_enabled: config.autoUpdate,
+    },
+  ];
+}
+
 /**
  * Status tool implementation.
  */
@@ -43,6 +112,7 @@ export async function status(
 ): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const backendStatus = backendManager.getStatus();
   const versions = backendManager.getVersions();
+  const backendPackages = getBackendPackages(config);
 
   const result = {
     server: "lsp-mcp",
@@ -74,6 +144,7 @@ export async function status(
       version: v.installed,
       status: v.status,
     })),
+    backend_packages: backendPackages,
     usage: {
       list: "Use list_backends to see available backends",
       start: "Use start_backend to install and start a backend",
@@ -94,6 +165,7 @@ export async function checkVersions(
   config: Config
 ): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const versions = backendManager.getVersions();
+  const backendPackages = getBackendPackages(config);
 
   const result = {
     server: {
@@ -116,6 +188,7 @@ export async function checkVersions(
         ? "Backend not started yet. Use a tool to start it and get version info."
         : undefined,
     })),
+    backend_packages: backendPackages,
     updateInfo: {
       packages: {
         python: {
@@ -196,12 +269,16 @@ export async function listBackends(
   config: Config
 ): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const backendStatus = backendManager.getStatus();
+  const backendPackages = getBackendPackages(config);
+  const byLanguage = new Map(backendPackages.map((pkg) => [pkg.language, pkg]));
 
   const backends = [
     {
       name: "python",
       enabled: config.languages.python?.enabled ?? false,
       provider: config.python?.provider,
+      package: byLanguage.get("python")?.package_ref,
+      resolver: byLanguage.get("python")?.resolver,
       status: backendStatus.python?.status || "not_started",
       tools: backendStatus.python?.tools || 0,
       description: "Python code intelligence (hover, definition, references, refactoring)",
@@ -210,6 +287,8 @@ export async function listBackends(
     {
       name: "typescript",
       enabled: config.languages.typescript?.enabled ?? false,
+      package: byLanguage.get("typescript")?.package_ref,
+      resolver: byLanguage.get("typescript")?.resolver,
       status: backendStatus.typescript?.status || "not_started",
       tools: backendStatus.typescript?.tools || 0,
       description: "TypeScript/JavaScript code intelligence",
@@ -218,6 +297,8 @@ export async function listBackends(
     {
       name: "vue",
       enabled: config.languages.vue?.enabled ?? false,
+      package: byLanguage.get("vue")?.package_ref,
+      resolver: byLanguage.get("vue")?.resolver,
       status: backendStatus.vue?.status || "not_started",
       tools: backendStatus.vue?.tools || 0,
       description: "Vue Single File Component (.vue) code intelligence via Volar",
@@ -227,6 +308,7 @@ export async function listBackends(
 
   const result = {
     backends,
+    backend_packages: backendPackages,
     usage: {
       start: "Call start_backend with language='python', 'typescript', or 'vue' to install and start a backend",
       tools: "Once started, backend tools will be available as {language}_{tool} (e.g., python_hover, vue_hover)",
