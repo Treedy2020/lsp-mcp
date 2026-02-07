@@ -129,14 +129,20 @@ When `LSP_MCP_AUTO_UPDATE=true`:
 # Install deps
 bun install
 
-# Build
+# Build local dist/ + bundled backends
 bun run build
 
 # Run in watch mode
 bun run dev
 
-# Core integration tests
+# Full integration suite (builds first, uses local dist/bundled)
 bun run test
+
+# Benchmark-focused suite (zod + fastapi + vitesse)
+bun run test:benchmark
+
+# Legacy smoke script (kept for low-level checks)
+bun run test:legacy
 
 # Prompt integration tests
 bun test test/integration/prompts.test.ts
