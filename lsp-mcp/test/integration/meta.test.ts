@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
+import * as os from "os";
 import * as path from "path";
 import { McpTestClient } from "../utils/mcp-client.js";
 
@@ -32,6 +33,19 @@ describe("Meta Tools", () => {
     expect(result.workspaces).toBeDefined();
     expect(result.workspaces.global).toBeDefined();
     expect(result.workspaces.per_language).toBeDefined();
+    expect(result.workspaces.overrides).toBeDefined();
+    expect(result.workspaces.resolved).toBeDefined();
+  });
+
+  it("should expose workspace overrides and resolved values", async () => {
+    await client.callTool("switch_workspace", { path: os.tmpdir() });
+    await client.callTool("switch_workspace_for_language", { language: "vue", path: "/tmp" });
+    const result = await client.callTool("status", {});
+
+    expect(result.workspaces.global).toBe(os.tmpdir());
+    expect(result.workspaces.overrides.vue).toBe("/tmp");
+    expect(result.workspaces.resolved.vue).toBe("/tmp");
+    expect(result.workspaces.resolved.typescript).toBe(os.tmpdir());
   });
 
   it("should expose legacy namespaced unified aliases", async () => {

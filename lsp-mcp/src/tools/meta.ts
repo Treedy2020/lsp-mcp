@@ -38,6 +38,7 @@ export async function status(
   workspaces?: {
     global: string | null;
     perLanguage?: Record<string, string | null>;
+    resolvedPerLanguage?: Record<string, string | null>;
   }
 ): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const backendStatus = backendManager.getStatus();
@@ -62,7 +63,9 @@ export async function status(
     },
     workspaces: {
       global: workspaces?.global ?? null,
-      per_language: workspaces?.perLanguage ?? {},
+      overrides: workspaces?.perLanguage ?? {},
+      resolved: workspaces?.resolvedPerLanguage ?? {},
+      per_language: workspaces?.resolvedPerLanguage ?? {},
     },
     backends: backendStatus,
     versions: versions.map((v) => ({

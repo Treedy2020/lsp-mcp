@@ -75,6 +75,10 @@ function getWorkspaceForLanguage(language: Language): string | null {
   return activeWorkspaceByLanguage.get(language) || activeWorkspacePath;
 }
 
+function getWorkspaceOverride(language: Language): string | null {
+  return activeWorkspaceByLanguage.get(language) || null;
+}
+
 // Create MCP server
 const server = new McpServer({
   name: "lsp-mcp",
@@ -411,6 +415,11 @@ server.registerTool(
     {
       global: activeWorkspacePath,
       perLanguage: {
+        python: getWorkspaceOverride("python"),
+        typescript: getWorkspaceOverride("typescript"),
+        vue: getWorkspaceOverride("vue"),
+      },
+      resolvedPerLanguage: {
         python: getWorkspaceForLanguage("python"),
         typescript: getWorkspaceForLanguage("typescript"),
         vue: getWorkspaceForLanguage("vue"),
