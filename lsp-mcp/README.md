@@ -40,7 +40,7 @@ git_diagnostics
 - Language-specific refactor tools where needed:
   - Python: `python_move`, `python_change_signature`, `python_function_signature`
   - TypeScript: `typescript_move`, `typescript_function_signature`
-- Meta/admin tools: `status`, `list_backends`, `check_versions`, `update_backend`, `reload_config`, `switch_workspace`, `switch_workspace_for_language`, `discover_language_workspaces`, `doctor`, `expand_result`
+- Meta/admin tools: `status`, `list_backends`, `check_versions`, `update_backend`, `reload_config`, `switch_workspace`, `switch_workspace_for_language`, `discover_language_workspaces`, `semantic_session_start`, `doctor`, `expand_result`
 - Built-in prompts for agent workflows and best practices
 
 ## Tool Model (Current)
@@ -81,8 +81,9 @@ Paged responses include:
 
 ### Server/meta tools
 
-- `status`, `list_backends`, `start_backend`, `update_backend`, `check_versions`, `reload_config`, `switch_python_backend`, `switch_workspace`, `switch_workspace_for_language`, `discover_language_workspaces`, `doctor`, `expand_result`
+- `status`, `list_backends`, `start_backend`, `update_backend`, `check_versions`, `reload_config`, `switch_python_backend`, `switch_workspace`, `switch_workspace_for_language`, `discover_language_workspaces`, `semantic_session_start`, `doctor`, `expand_result`
 - `discover_language_workspaces` input: `root` (optional), `max_depth` (optional, default `2`), `apply` (optional, default `false`)
+- `semantic_session_start` input: `language` (optional), `workspace` (optional), `file` (optional), `start_backend` (optional, default `true`)
 - In mixed-language monorepos, semantic tools require language workspace mapping (set via `switch_workspace_for_language` or `discover_language_workspaces(..., apply=true)`).
 - `doctor` now includes `workspaceDependencyChecks.language_workspace_discovery` with suggested per-language workspace commands.
 - `doctor` includes `backendPackageDrift` to show installed backend version vs latest policy and upgrade next steps.

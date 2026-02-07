@@ -128,6 +128,56 @@ function semanticWorkspaceRequiredResponse(language: Language, toolName: string)
   };
 }
 
+function normalizeSemanticErrorPayload(
+  payload: Record<string, unknown>,
+  toolName: string,
+  resolvedLanguage: Language | "multi" | null | undefined,
+  resolvedWorkspace: string | null
+): Record<string, unknown> {
+  const rawError = payload.error;
+  const hasError = typeof rawError === "string" && rawError.length > 0;
+  if (!hasError) return payload;
+
+  const lower = String(rawError).toLowerCase();
+  const normalizedCode =
+    typeof payload.error_code === "string" && payload.error_code.length > 0
+      ? payload.error_code
+      : lower.includes("workspace")
+        ? "LANGUAGE_WORKSPACE_REQUIRED"
+        : lower.includes("dependency")
+          ? "SEMANTIC_DEPENDENCIES_MISSING"
+          : lower.includes("timeout")
+            ? "SEMANTIC_BACKEND_TIMEOUT"
+            : "SEMANTIC_TOOL_ERROR";
+
+  const nextStep =
+    typeof payload.next_step === "string" && payload.next_step.length > 0
+      ? payload.next_step
+      : resolvedLanguage && resolvedLanguage !== "multi"
+        ? `Call switch_workspace_for_language(language='${resolvedLanguage}', path='/abs/project/root') then retry ${toolName}.`
+        : `Retry ${toolName} after setting per-language workspace with switch_workspace_for_language(...).`;
+
+  const installCommands = Array.isArray(payload.install_commands)
+    ? payload.install_commands
+    : [nextStep];
+
+  const missingPackages = Array.isArray(payload.missing_packages)
+    ? payload.missing_packages
+    : [];
+
+  return {
+    ...payload,
+    error_code: normalizedCode,
+    strict_mode: payload.strict_mode ?? true,
+    next_step: nextStep,
+    install_commands: installCommands,
+    missing_packages: missingPackages,
+    tool: payload.tool ?? toolName,
+    resolved_language: payload.resolved_language ?? resolvedLanguage ?? null,
+    resolved_workspace: payload.resolved_workspace ?? resolvedWorkspace ?? null,
+  };
+}
+
 function withSemanticContext(
   response: { content: Array<{ type: "text"; text: string }> },
   toolName: string,
@@ -163,7 +213,12 @@ function withSemanticContext(
       content: [{
         type: "text",
         text: JSON.stringify({
-          ...parsed,
+          ...normalizeSemanticErrorPayload(
+            parsed,
+            toolName,
+            parsed.resolved_language ?? parsed.language ?? effectiveLanguage,
+            resolvedWorkspace
+          ),
           resolved_language: parsed.resolved_language ?? parsed.language ?? effectiveLanguage,
           resolved_workspace: resolvedWorkspace,
           backend_instance_id: backendInstanceId,
@@ -355,6 +410,29 @@ function pickLanguageWorkspace(
       return c.typescriptScore > 0;
     }) || null
   );
+}
+
+function inferWorkspaceRootFromFile(filePath: string, language: Language): string {
+  let current = fs.existsSync(filePath) && fs.statSync(filePath).isDirectory()
+    ? filePath
+    : path.dirname(filePath);
+  const markersByLanguage: Record<string, string[]> = {
+    python: ["pyproject.toml", "requirements.txt", "setup.py"],
+    typescript: ["package.json", "tsconfig.json"],
+    vue: ["package.json", "vite.config.ts", "vite.config.js", "vue.config.js"],
+  };
+  const markers = markersByLanguage[language] || [];
+  for (let i = 0; i < 6; i++) {
+    if (markers.some((marker) => fs.existsSync(path.join(current, marker)))) {
+      return current;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return fs.existsSync(filePath) && fs.statSync(filePath).isDirectory()
+    ? filePath
+    : path.dirname(filePath);
 }
 
 // Create MCP server
@@ -720,6 +798,173 @@ server.registerTool(
     backendManager.updateConfig(newConfig);
     return {
       content: [{ type: "text", text: JSON.stringify({ success: true, message: "Configuration reloaded", config: newConfig }) }],
+    };
+  }
+);
+
+server.registerTool(
+  "semantic_session_start",
+  {
+    description: "Bootstrap semantic LSP workflow for one language: resolve language/workspace, validate dependencies, and return next-step commands.",
+    inputSchema: {
+      language: z.enum(["python", "typescript", "vue"]).optional(),
+      workspace: z.string().optional(),
+      file: z.string().optional(),
+      start_backend: z.boolean().default(true).optional(),
+    },
+  },
+  async ({ language, workspace, file, start_backend }) => {
+    const requestedPath = file || workspace || null;
+    let resolvedLanguage: Language | null = language || null;
+    if (!resolvedLanguage && requestedPath) {
+      const abs = path.isAbsolute(requestedPath) ? requestedPath : path.resolve(requestedPath);
+      resolvedLanguage = inferLanguageFromPath(abs, config);
+    }
+
+    if (!resolvedLanguage) {
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            success: false,
+            error: "SEMANTIC_SESSION_LANGUAGE_REQUIRED",
+            error_code: "SEMANTIC_SESSION_LANGUAGE_REQUIRED",
+            message: "Unable to infer language. Provide language or a file/workspace path.",
+            next_step: "Call semantic_session_start(language='typescript'|'python'|'vue', workspace='/abs/project/root').",
+            install_commands: ["semantic_session_start(language='typescript', workspace='/abs/project/root')"],
+            missing_packages: [],
+            strict_mode: true,
+          }),
+        }],
+      };
+    }
+
+    if (!config.languages[resolvedLanguage]?.enabled) {
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            success: false,
+            error: "LANGUAGE_DISABLED",
+            error_code: "LANGUAGE_DISABLED",
+            language: resolvedLanguage,
+            message: `Language '${resolvedLanguage}' is disabled in current config.`,
+            next_step: `Set LSP_MCP_${resolvedLanguage.toUpperCase()}_ENABLED=true and restart server.`,
+            install_commands: [],
+            missing_packages: [],
+            strict_mode: true,
+          }),
+        }],
+      };
+    }
+
+    let resolvedWorkspace = workspace || getWorkspaceForLanguage(resolvedLanguage) || activeWorkspacePath || null;
+    if (!resolvedWorkspace && file) {
+      const absFile = path.isAbsolute(file) ? file : path.resolve(file);
+      resolvedWorkspace = inferWorkspaceRootFromFile(absFile, resolvedLanguage);
+    }
+    if (resolvedWorkspace && !path.isAbsolute(resolvedWorkspace)) {
+      resolvedWorkspace = path.resolve(resolvedWorkspace);
+    }
+
+    const commands: string[] = [];
+    if (resolvedWorkspace) {
+      activeWorkspaceByLanguage.set(resolvedLanguage, resolvedWorkspace);
+      commands.push(`switch_workspace_for_language(language='${resolvedLanguage}', path='${resolvedWorkspace}')`);
+      if (!activeWorkspacePath) {
+        activeWorkspacePath = resolvedWorkspace;
+        commands.unshift(`switch_workspace(path='${resolvedWorkspace}')`);
+      }
+    } else {
+      commands.push(`switch_workspace_for_language(language='${resolvedLanguage}', path='/abs/project/root')`);
+    }
+
+    const missingPackages: string[] = [];
+    const installCommands: string[] = [];
+    let dependencyStatus: "ok" | "missing" = "ok";
+
+    if (resolvedLanguage === "vue") {
+      const vueRoot = resolvedWorkspace || "<your-vue-project-root>";
+      const deps = resolvedWorkspace ? checkVueProjectDeps(resolvedWorkspace) : null;
+      if (!deps || !deps.ok) {
+        dependencyStatus = "missing";
+        missingPackages.push(...(deps?.missing_packages || ["typescript", "@vue/language-server"]));
+        installCommands.push(
+          `cd ${vueRoot} && pnpm add -D typescript @vue/language-server`,
+          `cd ${vueRoot} && npm install -D typescript @vue/language-server`,
+          `cd ${vueRoot} && yarn add -D typescript @vue/language-server`,
+          `cd ${vueRoot} && bun add -d typescript @vue/language-server`
+        );
+      }
+    }
+
+    if (resolvedLanguage === "python") {
+      const uvCheck = spawnSync("uv", ["--version"], { encoding: "utf-8", timeout: 3000, stdio: ["ignore", "pipe", "pipe"] });
+      if (uvCheck.status !== 0) {
+        dependencyStatus = "missing";
+        missingPackages.push("uv");
+        installCommands.push("Install uv: https://docs.astral.sh/uv/getting-started/installation/");
+      }
+    }
+
+    if (resolvedLanguage !== "python") {
+      const nodeCheck = spawnSync("node", ["--version"], { encoding: "utf-8", timeout: 3000, stdio: ["ignore", "pipe", "pipe"] });
+      const npxCheck = spawnSync("npx", ["--version"], { encoding: "utf-8", timeout: 3000, stdio: ["ignore", "pipe", "pipe"] });
+      if (nodeCheck.status !== 0 || npxCheck.status !== 0) {
+        dependencyStatus = "missing";
+        if (!missingPackages.includes("node")) missingPackages.push("node");
+        if (!missingPackages.includes("npx")) missingPackages.push("npx");
+        installCommands.push("Install Node.js (includes npx): https://nodejs.org/");
+      }
+    }
+
+    const backendPackages = getBackendPackages(config);
+    const backendPackage = backendPackages.find((pkg) => pkg.language === resolvedLanguage) || null;
+
+    let backendStarted = false;
+    let backendStartError: string | null = null;
+    const shouldStartBackend = start_backend !== false;
+    if (shouldStartBackend && resolvedWorkspace && dependencyStatus === "ok") {
+      try {
+        const lock = await ensureBackendSingleton(resolvedLanguage, resolvedWorkspace);
+        if (lock.ok) {
+          if (lock.proxyHost && lock.proxyPort) {
+            backendStarted = true;
+          } else {
+            await backendManager.getBackend(resolvedLanguage);
+            startedBackends.add(resolvedLanguage);
+            await backendManager.callTool(resolvedLanguage, "switch_workspace", { path: resolvedWorkspace });
+            backendStarted = true;
+          }
+        } else {
+          backendStartError = "Failed to acquire backend singleton lock.";
+        }
+      } catch (error) {
+        backendStartError = String(error);
+      }
+    }
+
+    commands.push(`hover(file='/abs/path/to/${resolvedLanguage === "python" ? "module.py" : resolvedLanguage === "vue" ? "component.vue" : "file.ts"}', line=1, column=1)`);
+    const success = !!resolvedWorkspace && dependencyStatus === "ok" && (!shouldStartBackend || backendStarted);
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          success,
+          language: resolvedLanguage,
+          resolved_language: resolvedLanguage,
+          resolved_workspace: resolvedWorkspace,
+          dependency_status: dependencyStatus,
+          missing_packages: missingPackages,
+          install_commands: installCommands,
+          backend_package: backendPackage,
+          backend_started: backendStarted,
+          backend_start_error: backendStartError,
+          strict_mode: true,
+          commands,
+          next_step: success ? commands[commands.length - 1] : (installCommands[0] || commands[0]),
+        }),
+      }],
     };
   }
 );
