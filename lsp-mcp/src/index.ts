@@ -807,6 +807,73 @@ server.registerTool(
     }
 
     const enabledLanguages = Object.keys(config.languages).filter((lang) => config.languages[lang]?.enabled);
+    const workspaceDiscovery = workspaceDependencyChecks.language_workspace_discovery as
+      | { suggestions: Record<string, string | null> | null; commands: string[]; current_overrides?: Record<string, string | null> }
+      | undefined;
+    const vueChecks = workspaceDependencyChecks.vue as {
+      projects?: Array<{
+        root: string;
+        ok: boolean;
+        missing_packages?: string[];
+        install_commands?: string[];
+        install_example?: string;
+      }>;
+    } | undefined;
+
+    const languageCommandChains = Object.fromEntries(
+      enabledLanguages.map((lang) => {
+        const language = lang as Language;
+        const overrideWorkspace = getWorkspaceOverride(language);
+        const suggestedWorkspace = workspaceDiscovery?.suggestions?.[language] ?? null;
+        const targetWorkspace = overrideWorkspace || suggestedWorkspace || activeWorkspacePath || null;
+        const commands: string[] = [];
+        const missingPackages: string[] = [];
+        let dependencyStatus: "ok" | "missing" | "unknown" = "ok";
+
+        if (!activeWorkspacePath) {
+          commands.push("switch_workspace(path='/abs/monorepo/root')");
+        }
+        if (!overrideWorkspace && targetWorkspace) {
+          commands.push(`switch_workspace_for_language(language='${language}', path='${targetWorkspace}')`);
+        }
+
+        if (language === "vue") {
+          const vueProjects = vueChecks?.projects || [];
+          const matchedProject =
+            vueProjects.find((p) => targetWorkspace && (p.root === targetWorkspace || targetWorkspace.startsWith(p.root) || p.root.startsWith(targetWorkspace))) ||
+            vueProjects[0];
+          if (matchedProject && !matchedProject.ok) {
+            dependencyStatus = "missing";
+            for (const pkg of matchedProject.missing_packages || []) {
+              if (!missingPackages.includes(pkg)) missingPackages.push(pkg);
+            }
+            const installCmd = matchedProject.install_commands?.[0] || matchedProject.install_example;
+            if (installCmd) commands.push(installCmd);
+          } else if (!matchedProject) {
+            dependencyStatus = "unknown";
+          }
+          commands.push("hover(file='/abs/path/to/component.vue', line=1, column=1)");
+        } else if (language === "python") {
+          if (!uvCacheWritable) {
+            dependencyStatus = "missing";
+            commands.push(`export UV_CACHE_DIR='${uvCacheDir}'`);
+          }
+          commands.push("hover(file='/abs/path/to/module.py', line=1, column=1)");
+        } else if (language === "typescript") {
+          commands.push("hover(file='/abs/path/to/file.ts', line=1, column=1)");
+        }
+
+        return [language, {
+          language,
+          workspace: targetWorkspace,
+          workspace_configured: !!overrideWorkspace,
+          dependency_status: dependencyStatus,
+          missing_packages: missingPackages,
+          commands,
+        }];
+      })
+    );
+    workspaceDependencyChecks.language_command_chains = languageCommandChains;
     const backendCommands = Object.fromEntries(
       enabledLanguages.map((lang) => {
         const cmd = backendManager.getVersions().find((v) => v.language === lang)?.command ?? "not configured";
@@ -833,21 +900,17 @@ server.registerTool(
     if (!checks.uv.available && config.languages.python?.enabled) recommendations.push("Install uv for Python backend support.");
     if (!checks.bun.available) recommendations.push("Install Bun if you run this server from source.");
     if (config.languages.vue?.enabled && activeWorkspacePath) {
-      const vueChecks = workspaceDependencyChecks.vue as { projects?: Array<{ ok: boolean; install_example: string }> } | undefined;
       const missing = (vueChecks?.projects || []).filter((p) => !p.ok);
       if (missing.length > 0) {
         recommendations.push("Vue strict semantic mode is enabled and some Vue projects are missing runtime dependencies.");
         for (const project of missing) {
-          recommendations.push(`Install Vue semantic deps: ${project.install_example}`);
+          recommendations.push(`Install Vue semantic deps: ${project.install_commands?.[0] || project.install_example}`);
         }
       }
     }
     if (config.languages.python?.enabled && !uvCacheWritable) {
       recommendations.push(`UV cache directory is not writable: ${uvCacheDir}. Set UV_CACHE_DIR to a writable path.`);
     }
-    const workspaceDiscovery = workspaceDependencyChecks.language_workspace_discovery as
-      | { suggestions: Record<string, string | null> | null; commands: string[]; current_overrides?: Record<string, string | null> }
-      | undefined;
     if (!activeWorkspacePath) {
       recommendations.push("Set a root workspace first, then run doctor again to discover per-language workspaces.");
     } else if (workspaceDiscovery?.suggestions) {
@@ -877,6 +940,7 @@ server.registerTool(
       activeWorkspacePath,
       enabledLanguages,
       workspaceDependencyChecks,
+      languageCommandChains,
       backendCommands,
       probe_backends: !!probe_backends,
       probeResults: probe_backends ? probeResults : undefined,
@@ -889,6 +953,9 @@ server.registerTool(
     }
     for (const [name, depCheck] of Object.entries(workspaceDependencyChecks)) {
       items.push({ kind: "workspace_dependency", key: name, value: depCheck });
+    }
+    for (const [lang, chain] of Object.entries(languageCommandChains)) {
+      items.push({ kind: "language_command_chain", key: lang, value: chain });
     }
     for (const [lang, command] of Object.entries(backendCommands)) {
       items.push({ kind: "backend_command", key: lang, value: command });
@@ -905,6 +972,7 @@ server.registerTool(
       activeWorkspacePath,
       enabledLanguages,
       recommendations_count: recommendations.length,
+      command_chains_count: Object.keys(languageCommandChains).length,
       item_count: items.length,
     };
     const doctorCursor = makeCursor("doctor", items, items.length, doctorSummary);

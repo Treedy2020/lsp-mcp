@@ -63,6 +63,11 @@ describe("Meta Tools", () => {
     expect(result.enabledLanguages).toBeDefined();
     expect(result.workspaceDependencyChecks).toBeDefined();
     expect(result.workspaceDependencyChecks.language_workspace_discovery).toBeDefined();
+    expect(result.workspaceDependencyChecks.language_command_chains).toBeDefined();
+    expect(result.languageCommandChains).toBeDefined();
+    expect(result.languageCommandChains.typescript).toBeDefined();
+    expect(Array.isArray(result.languageCommandChains.typescript.commands)).toBe(true);
+    expect(result.languageCommandChains.typescript.commands.length).toBeGreaterThan(0);
     expect(Array.isArray(result.recommendations)).toBe(true);
   });
 

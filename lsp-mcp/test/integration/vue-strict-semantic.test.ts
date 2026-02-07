@@ -65,6 +65,7 @@ describe("Vue Strict Semantic Dependencies", () => {
     await client.callTool("switch_workspace", { path: TEST_DIR });
     const result = await client.callTool("doctor", {});
     const vueChecks = result.workspaceDependencyChecks?.vue;
+    const vueChain = result.languageCommandChains?.vue;
 
     expect(vueChecks?.strict_mode).toBe(true);
     expect(Array.isArray(vueChecks?.projects)).toBe(true);
@@ -73,5 +74,8 @@ describe("Vue Strict Semantic Dependencies", () => {
     expect(vueChecks.projects[0].missing_packages).toContain("@vue/language-server");
     expect(Array.isArray(vueChecks.projects[0].install_commands)).toBe(true);
     expect(String(vueChecks.projects[0].install_commands?.[0] || "")).toContain("pnpm add -D typescript @vue/language-server");
+    expect(vueChain?.dependency_status).toBe("missing");
+    expect(Array.isArray(vueChain?.commands)).toBe(true);
+    expect(String(vueChain?.commands?.join(" ") || "")).toContain("pnpm add -D typescript @vue/language-server");
   });
 });
