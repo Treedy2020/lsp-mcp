@@ -31,6 +31,13 @@ describe("Language Workspace Requirement", () => {
     });
 
     expect(result.error).toBe("LANGUAGE_WORKSPACE_REQUIRED");
+    expect(result.error_code).toBe("LANGUAGE_WORKSPACE_REQUIRED");
+    expect(result.strict_mode).toBe(true);
+    expect(result.missing_workspace_for_language).toBe("typescript");
+    expect(Array.isArray(result.install_commands)).toBe(true);
+    expect(String(result.install_commands?.[0] || "")).toContain("switch_workspace_for_language");
+    expect(Array.isArray(result.missing_packages)).toBe(true);
+    expect(result.missing_packages.length).toBe(0);
     expect(result.required_workspace_scope).toBe("language");
     expect(result.language).toBe("typescript");
     expect(result.resolved_workspace).toBeNull();

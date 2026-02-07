@@ -103,16 +103,22 @@ function isSemanticTool(toolName: string): boolean {
 }
 
 function semanticWorkspaceRequiredResponse(language: Language, toolName: string) {
+  const setupCommand = `switch_workspace_for_language(language='${language}', path='/abs/project/root')`;
   return {
     content: [{
       type: "text" as const,
       text: JSON.stringify({
         error: "LANGUAGE_WORKSPACE_REQUIRED",
+        error_code: "LANGUAGE_WORKSPACE_REQUIRED",
         message: `Tool '${toolName}' requires an explicit workspace for '${language}'.`,
         language,
         tool: toolName,
+        strict_mode: true,
+        missing_workspace_for_language: language,
         required_workspace_scope: "language",
-        next_step: `Call switch_workspace_for_language(language='${language}', path='/abs/project/root') before using semantic tools.`,
+        next_step: `Call ${setupCommand} before using semantic tools.`,
+        install_commands: [setupCommand],
+        missing_packages: [],
         resolved_workspace: null,
         backend_instance_id: null,
       }),
@@ -1403,17 +1409,30 @@ function checkVueProjectDeps(projectRoot: string): {
   root: string;
   has_typescript: boolean;
   has_vue_language_server: boolean;
+  missing_packages: string[];
+  install_commands: string[];
   ok: boolean;
   install_example: string;
 } {
   const hasTypeScript = fs.existsSync(path.join(projectRoot, "node_modules", "typescript", "lib", "tsserver.js"));
   const hasVueLs = fs.existsSync(path.join(projectRoot, "node_modules", "@vue", "language-server"));
+  const installCommands = [
+    `cd ${projectRoot} && pnpm add -D typescript @vue/language-server`,
+    `cd ${projectRoot} && npm install -D typescript @vue/language-server`,
+    `cd ${projectRoot} && yarn add -D typescript @vue/language-server`,
+    `cd ${projectRoot} && bun add -d typescript @vue/language-server`,
+  ];
+  const missingPackages: string[] = [];
+  if (!hasTypeScript) missingPackages.push("typescript");
+  if (!hasVueLs) missingPackages.push("@vue/language-server");
   return {
     root: projectRoot,
     has_typescript: hasTypeScript,
     has_vue_language_server: hasVueLs,
+    missing_packages: missingPackages,
+    install_commands: installCommands,
     ok: hasTypeScript && hasVueLs,
-    install_example: `cd ${projectRoot} && pnpm add -D typescript @vue/language-server`,
+    install_example: installCommands[0],
   };
 }
 
@@ -1446,14 +1465,28 @@ function buildVueMissingDepsErrorResponse(
   workspacePath?: string | null
 ): { content: Array<{ type: "text"; text: string }> } {
   const installRoot = workspacePath || "<your-vue-project-root>";
+  const installCommands = [
+    `cd ${installRoot} && pnpm add -D typescript @vue/language-server`,
+    `cd ${installRoot} && npm install -D typescript @vue/language-server`,
+    `cd ${installRoot} && yarn add -D typescript @vue/language-server`,
+    `cd ${installRoot} && bun add -d typescript @vue/language-server`,
+  ];
   return {
     content: [{
       type: "text",
       text: JSON.stringify({
-        error: `Vue semantic tool '${toolName}' is unavailable because required dependencies are missing.`,
+        error: "SEMANTIC_DEPENDENCIES_MISSING",
+        error_code: "VUE_SEMANTIC_DEPS_MISSING",
+        message: `Vue semantic tool '${toolName}' is unavailable because required dependencies are missing.`,
         code: "VUE_SEMANTIC_DEPS_MISSING",
+        language: "vue",
+        tool: toolName,
+        strict_mode: VUE_STRICT_SEMANTIC,
+        missing_packages: ["typescript", "@vue/language-server"],
+        install_commands: installCommands,
+        next_step: installCommands[0],
         required_packages: ["typescript", "@vue/language-server"],
-        install_example: `cd ${installRoot} && pnpm add -D typescript @vue/language-server`,
+        install_example: installCommands[0],
         notes: [
           "Default behavior is strict to avoid hidden fallback confusion.",
           "Set LSP_MCP_VUE_STRICT_SEMANTIC=false to allow degraded fallback responses.",

@@ -47,9 +47,30 @@ describe("Vue Strict Semantic Dependencies", () => {
     await client.callTool("switch_workspace_for_language", { language: "vue", path: TEST_DIR });
     const result = await client.callTool("hover", { file: vueFile, line: 2, column: 8 });
 
+    expect(result.error).toBe("SEMANTIC_DEPENDENCIES_MISSING");
+    expect(result.error_code).toBe("VUE_SEMANTIC_DEPS_MISSING");
+    expect(result.strict_mode).toBe(true);
+    expect(result.missing_packages).toContain("typescript");
+    expect(result.missing_packages).toContain("@vue/language-server");
+    expect(Array.isArray(result.install_commands)).toBe(true);
+    expect(String(result.install_commands?.[0] || "")).toContain("pnpm add -D typescript @vue/language-server");
     expect(result.code).toBe("VUE_SEMANTIC_DEPS_MISSING");
     expect(result.required_packages).toContain("typescript");
     expect(result.required_packages).toContain("@vue/language-server");
     expect(String(result.install_example)).toContain("pnpm add -D typescript @vue/language-server");
+  });
+
+  it("should expose structured missing dependency guidance in doctor output", async () => {
+    await client.callTool("switch_workspace", { path: TEST_DIR });
+    const result = await client.callTool("doctor", {});
+    const vueChecks = result.workspaceDependencyChecks?.vue;
+
+    expect(vueChecks?.strict_mode).toBe(true);
+    expect(Array.isArray(vueChecks?.projects)).toBe(true);
+    expect(vueChecks.projects.length).toBeGreaterThan(0);
+    expect(vueChecks.projects[0].missing_packages).toContain("typescript");
+    expect(vueChecks.projects[0].missing_packages).toContain("@vue/language-server");
+    expect(Array.isArray(vueChecks.projects[0].install_commands)).toBe(true);
+    expect(String(vueChecks.projects[0].install_commands?.[0] || "")).toContain("pnpm add -D typescript @vue/language-server");
   });
 });
