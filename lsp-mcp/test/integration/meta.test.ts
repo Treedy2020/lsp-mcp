@@ -45,7 +45,7 @@ describe("Meta Tools", () => {
     expect(result.workspaces.global).toBe(os.tmpdir());
     expect(result.workspaces.overrides.vue).toBe("/tmp");
     expect(result.workspaces.resolved.vue).toBe("/tmp");
-    expect(result.workspaces.resolved.typescript).toBe(os.tmpdir());
+    expect(result.workspaces.resolved.typescript).toBeNull();
   });
 
   it("should expose legacy namespaced unified aliases", async () => {

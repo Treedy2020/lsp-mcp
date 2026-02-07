@@ -55,7 +55,7 @@ describe("Vue Fallback", () => {
   });
 
   it("should provide symbols for vue files", async () => {
-    await client.callTool("switch_workspace", { path: TEST_DIR });
+    await client.callTool("switch_workspace_for_language", { language: "vue", path: TEST_DIR });
     const result = await client.callTool("symbols", { file: vueFile });
 
     expect(result.error).toBeUndefined();
@@ -64,7 +64,7 @@ describe("Vue Fallback", () => {
   });
 
   it("should provide hover payload for vue identifiers", async () => {
-    await client.callTool("switch_workspace", { path: TEST_DIR });
+    await client.callTool("switch_workspace_for_language", { language: "vue", path: TEST_DIR });
     const result = await client.callTool("hover", { file: vueFile, line: 2, column: 8 });
 
     expect(result.error).toBeUndefined();
@@ -72,7 +72,7 @@ describe("Vue Fallback", () => {
   });
 
   it("should provide references payload for vue identifiers", async () => {
-    await client.callTool("switch_workspace", { path: TEST_DIR });
+    await client.callTool("switch_workspace_for_language", { language: "vue", path: TEST_DIR });
     const result = await client.callTool("references", { file: vueFile, line: 2, column: 8 });
 
     expect(result.error).toBeUndefined();
@@ -81,7 +81,7 @@ describe("Vue Fallback", () => {
   });
 
   it("should gracefully fallback for out-of-bounds cursor positions", async () => {
-    await client.callTool("switch_workspace", { path: TEST_DIR });
+    await client.callTool("switch_workspace_for_language", { language: "vue", path: TEST_DIR });
     const hover = await client.callTool("hover", { file: vueFile, line: 2, column: 999 });
     const definition = await client.callTool("definition", { file: vueFile, line: 2, column: 999 });
 
@@ -95,7 +95,7 @@ describe("Vue Fallback", () => {
   });
 
   it("should resolve definitions from gitignored declaration files", async () => {
-    await client.callTool("switch_workspace", { path: TEST_DIR });
+    await client.callTool("switch_workspace_for_language", { language: "vue", path: TEST_DIR });
     const definition = await client.callTool("definition", { file: vueFile, line: 3, column: 16 });
     const hover = await client.callTool("hover", { file: vueFile, line: 3, column: 16 });
 

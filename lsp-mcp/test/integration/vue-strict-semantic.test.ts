@@ -44,7 +44,7 @@ describe("Vue Strict Semantic Dependencies", () => {
   });
 
   it("should return actionable install guidance in strict mode", async () => {
-    await client.callTool("switch_workspace", { path: TEST_DIR });
+    await client.callTool("switch_workspace_for_language", { language: "vue", path: TEST_DIR });
     const result = await client.callTool("hover", { file: vueFile, line: 2, column: 8 });
 
     expect(result.code).toBe("VUE_SEMANTIC_DEPS_MISSING");

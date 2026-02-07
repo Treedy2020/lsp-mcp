@@ -12,7 +12,7 @@ describe("Python Integration (FastAPI)", () => {
   beforeAll(async () => {
     client = new McpTestClient(SERVER_PATH);
     // Initialize workspace
-    await client.callTool("switch_workspace", { path: WORKSPACE_ROOT });
+    await client.callTool("switch_workspace_for_language", { language: "python", path: WORKSPACE_ROOT });
   });
 
   afterAll(() => {

@@ -10,7 +10,7 @@ describe("TypeScript Integration (Zod)", () => {
 
   beforeAll(async () => {
     client = new McpTestClient(SERVER_PATH);
-    await client.callTool("switch_workspace", { path: WORKSPACE_ROOT });
+    await client.callTool("switch_workspace_for_language", { language: "typescript", path: WORKSPACE_ROOT });
   });
 
   afterAll(() => {

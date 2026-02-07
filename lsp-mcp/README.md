@@ -121,7 +121,8 @@ When `LSP_MCP_AUTO_UPDATE=true`:
 ## Better Out-of-Box Experience (Recommended)
 
 - Use absolute file paths for the first calls to avoid inference edge cases.
-- Call `switch_workspace path=/abs/project/root` once per session for stable cross-file behavior.
+- Call `switch_workspace path=/abs/project/root` to set the global root for non-semantic flows (search, project exploration).
+- For semantic tools (hover/definition/references/diagnostics), set per-language roots via `switch_workspace_for_language` or `discover_language_workspaces(..., apply=true)`.
 - For mixed-language repos, prefer `git_diagnostics` before broad `diagnostics path=.`
 - If startup speed matters, set `LSP_MCP_EAGER_START=true`.
 

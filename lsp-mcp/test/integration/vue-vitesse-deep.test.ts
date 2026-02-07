@@ -25,6 +25,8 @@ describe("Vue Integration Deep (Vitesse)", () => {
       },
     });
     await client.callTool("switch_workspace", { path: WORKSPACE_ROOT });
+    await client.callTool("switch_workspace_for_language", { language: "vue", path: WORKSPACE_ROOT });
+    await client.callTool("switch_workspace_for_language", { language: "typescript", path: WORKSPACE_ROOT });
   });
 
   afterAll(() => {

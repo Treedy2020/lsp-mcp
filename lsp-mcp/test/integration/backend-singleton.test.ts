@@ -31,6 +31,8 @@ describe("Backend Singleton", () => {
     await new Promise((r) => setTimeout(r, 500));
     await clientA.callTool("switch_workspace", { path: TEST_DIR });
     await clientB.callTool("switch_workspace", { path: TEST_DIR });
+    await clientA.callTool("switch_workspace_for_language", { language: "typescript", path: TEST_DIR });
+    await clientB.callTool("switch_workspace_for_language", { language: "typescript", path: TEST_DIR });
   });
 
   afterAll(() => {

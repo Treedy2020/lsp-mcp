@@ -2164,30 +2164,37 @@ const LEGACY_NAMESPACED_UNIFIED_TOOL_NAMES = new Set([
 server.registerTool(
   "switch_workspace",
   {
-    description: "Switch the active workspace for ALL backends simultaneously. This clears caches and refocuses code intelligence on the new project root.",
+    description: "Switch the global workspace root. Use switch_workspace_for_language for semantic language mappings in mixed-language repos.",
     inputSchema: {
       path: z.string().describe("Absolute path to the new project root directory"),
+      apply_to_languages: z.boolean().default(false).optional().describe("Also apply this path to all enabled language workspaces (legacy compatibility)"),
     },
   },
-  async ({ path: workspacePath }) => {
+  async ({ path: workspacePath, apply_to_languages }) => {
     activeWorkspacePath = workspacePath;
+    const applyToLanguages = apply_to_languages === true;
     const results: Record<string, any> = {};
     
     // Get all enabled languages
     const languages = Object.keys(config.languages).filter(
       (lang) => config.languages[lang].enabled
     );
-    for (const lang of languages) {
-      activeWorkspaceByLanguage.set(lang as Language, workspacePath);
+
+    if (applyToLanguages) {
+      for (const lang of languages) {
+        activeWorkspaceByLanguage.set(lang as Language, workspacePath);
+      }
     }
 
     await Promise.all(
       languages.map(async (lang) => {
         try {
           // Only call if backend is already started
-          if (startedBackends.has(lang)) {
+          if (startedBackends.has(lang) && applyToLanguages) {
             const result = await backendManager.callTool(lang, "switch_workspace", { path: workspacePath });
             results[lang] = JSON.parse(result.content[0].text);
+          } else if (startedBackends.has(lang) && !applyToLanguages) {
+            results[lang] = { status: "unchanged", message: "Language workspace unchanged; set with switch_workspace_for_language." };
           } else {
             results[lang] = { status: "not_started", message: "Workspace will be set when backend starts" };
           }
@@ -2204,6 +2211,12 @@ server.registerTool(
           text: JSON.stringify({
             success: true,
             workspace: workspacePath,
+            apply_to_languages: applyToLanguages,
+            workspace_overrides: {
+              python: getWorkspaceOverride("python"),
+              typescript: getWorkspaceOverride("typescript"),
+              vue: getWorkspaceOverride("vue"),
+            },
             results,
           }, null, 2),
         },
