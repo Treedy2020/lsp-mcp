@@ -140,13 +140,24 @@ describe("TypeScript Hierarchy Tools", () => {
     expect(result.links.some((link: any) => String(link.target).includes("https://example.com"))).toBe(true);
   });
 
-  it("should return strict not-implemented for linked editing range", async () => {
+  it("should return linked editing ranges for function symbol", async () => {
     const result = await client.callTool("linked_editing_range", {
       file: TEST_FILE,
-      line: 1,
+      line: 8,
       column: 10,
     });
-    expect(result.error_code).toBe("NOT_IMPLEMENTED");
-    expect(result.strict_mode).toBe(true);
+    expect(result.error).toBeUndefined();
+    expect(Array.isArray(result.ranges)).toBe(true);
+    expect(result.count).toBeGreaterThan(1);
+  });
+
+  it("should return semantic tokens for the file", async () => {
+    const result = await client.callTool("semantic_tokens", {
+      file: TEST_FILE,
+    });
+    expect(result.error).toBeUndefined();
+    expect(Array.isArray(result.tokens)).toBe(true);
+    expect(result.count).toBeGreaterThan(0);
+    expect(typeof result.tokens[0].token_type).toBe("string");
   });
 });

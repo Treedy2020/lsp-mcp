@@ -114,8 +114,8 @@ bun test test/integration/meta.test.ts test/integration/vue-strict-semantic.test
 
 ### P2 - Advanced capability
 
-- [ ] `semantic_tokens` for richer structure-aware reading.
-- [~] `linked_editing_range` for paired structural edits (strict `NOT_IMPLEMENTED` exposed; backend implementations pending).
+- [x] `semantic_tokens` for richer structure-aware reading (TypeScript implemented; Python/Vue pending).
+- [x] `linked_editing_range` for paired structural edits (TypeScript implemented; Python/Vue pending).
 - [ ] `moniker` for cross-package symbol identity.
 - [ ] `inlay_hint/resolve` optimization path for large files.
 
