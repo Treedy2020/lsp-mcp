@@ -54,6 +54,7 @@ const startedBackends = new Set<Language>();
 const registeredTools = new Set<string>();
 // Global active workspace path
 let activeWorkspacePath: string | null = null;
+const activeWorkspaceByLanguage = new Map<Language, string>();
 // Cursor storage for paged high-volume responses
 const cursorStore = new Map<string, { tool: string; items: any[]; createdAt: number; expiresAt: number; summary?: any; count?: number }>();
 const CURSOR_TTL_MS = 10 * 60 * 1000;
@@ -69,6 +70,10 @@ const BACKEND_LOCK_DIR = process.env.LSP_MCP_BACKEND_LOCK_DIR || path.join("/tmp
 let singletonRpcServer: net.Server | null = null;
 let singletonRpcEndpoint: { host: string; port: number } | null = null;
 let singletonRpcStarting = false;
+
+function getWorkspaceForLanguage(language: Language): string | null {
+  return activeWorkspaceByLanguage.get(language) || activeWorkspacePath;
+}
 
 // Create MCP server
 const server = new McpServer({
@@ -1882,6 +1887,9 @@ server.registerTool(
     const languages = Object.keys(config.languages).filter(
       (lang) => config.languages[lang].enabled
     );
+    for (const lang of languages) {
+      activeWorkspaceByLanguage.set(lang as Language, workspacePath);
+    }
 
     await Promise.all(
       languages.map(async (lang) => {
@@ -1910,6 +1918,45 @@ server.registerTool(
           }, null, 2),
         },
       ],
+    };
+  }
+);
+
+server.registerTool(
+  "switch_workspace_for_language",
+  {
+    description: "Switch workspace for one language backend only. Useful when a monorepo has separate per-language project roots.",
+    inputSchema: {
+      language: z.enum(["python", "typescript", "vue"]).describe("Language backend to update"),
+      path: z.string().describe("Absolute path to the project root for this language"),
+    },
+  },
+  async ({ language, path: workspacePath }) => {
+    const lang = language as Language;
+    activeWorkspaceByLanguage.set(lang, workspacePath);
+    let result: Record<string, unknown>;
+    try {
+      if (startedBackends.has(lang)) {
+        const forwarded = await backendManager.callTool(lang, "switch_workspace", { path: workspacePath });
+        result = JSON.parse(forwarded.content[0].text);
+      } else {
+        result = { status: "not_started", message: "Workspace will be set when backend starts" };
+      }
+    } catch (error) {
+      result = { error: String(error) };
+    }
+
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          success: true,
+          language: lang,
+          workspace: workspacePath,
+          global_workspace: activeWorkspacePath,
+          result,
+        }, null, 2),
+      }],
     };
   }
 );
@@ -2109,8 +2156,18 @@ function preRegisterTools(): void {
         }
 
         // For search, if workspace is known, auto-bind path so it can use normal routed flow.
-        if (tool.name === "search" && !args.path && activeWorkspacePath) {
-          args.path = activeWorkspacePath;
+        if (tool.name === "search" && !args.path) {
+          if (activeWorkspacePath && activeWorkspaceByLanguage.size === 0) {
+            args.path = activeWorkspacePath;
+          } else {
+            const enabled = Object.keys(config.languages).filter((lang) => config.languages[lang]?.enabled);
+            if (enabled.length === 1) {
+              const onlyLangWorkspace = getWorkspaceForLanguage(enabled[0] as Language);
+              if (onlyLangWorkspace) {
+                args.path = onlyLangWorkspace;
+              }
+            }
+          }
         }
 
         // Find the target path argument
@@ -2142,33 +2199,31 @@ function preRegisterTools(): void {
              delete backendArgs.preview_limit;
              delete backendArgs.page_size;
              delete backendArgs.cursor;
-             if (tool.name === "search" && !backendArgs.path && activeWorkspacePath) {
-               backendArgs.path = activeWorkspacePath;
-             }
              if (tool.name === "search" && typeof backendArgs.pattern !== "string") {
                const query = typeof args.query === "string" ? args.query.trim() : "";
                if (query.length > 0) {
                  backendArgs.pattern = query;
                }
              }
-             if (tool.name === "workspace_symbol" && !backendArgs.path && activeWorkspacePath) {
-               backendArgs.path = activeWorkspacePath;
-             }
              const requestedWorkspacePath = typeof backendArgs.path === "string"
                ? (path.isAbsolute(backendArgs.path)
                  ? backendArgs.path
                  : (activeWorkspacePath ? path.join(activeWorkspacePath, backendArgs.path) : path.resolve(backendArgs.path)))
-               : activeWorkspacePath;
+               : null;
              const workspaceQuery =
                tool.name === "workspace_symbol" && typeof args.query === "string" && args.query.trim().length > 0
                  ? args.query.trim()
                  : null;
              const startedEnabled = enabledLanguages.filter((lang) => startedBackends.has(lang));
              const lockByLanguage = new Map<string, Promise<SingletonGuardResult>>();
+             const resolveWorkspaceForLanguage = (lang: string): string | null => {
+               if (requestedWorkspacePath) return requestedWorkspacePath;
+               return getWorkspaceForLanguage(lang) || activeWorkspacePath;
+             };
              const getSingletonLock = (lang: string): Promise<SingletonGuardResult> => {
                const existing = lockByLanguage.get(lang);
                if (existing) return existing;
-               const next = ensureBackendSingleton(lang, requestedWorkspacePath);
+               const next = ensureBackendSingleton(lang, resolveWorkspaceForLanguage(lang));
                lockByLanguage.set(lang, next);
                return next;
              };
@@ -2181,10 +2236,15 @@ function preRegisterTools(): void {
                if (!lock.ok) {
                  throw new Error(`Singleton lock unavailable for ${lang}`);
                }
-               if (lock.proxyHost && lock.proxyPort) {
-                 return callRemoteBackendTool(lock.proxyHost, lock.proxyPort, lang, toolName, callArgs, requestedWorkspacePath);
+               const langWorkspace = resolveWorkspaceForLanguage(lang);
+               const nextArgs = { ...callArgs };
+               if ((toolName === "search" || toolName === "workspace_symbol") && typeof nextArgs.path !== "string" && langWorkspace) {
+                 nextArgs.path = langWorkspace;
                }
-               return backendManager.callTool(lang, toolName, callArgs);
+               if (lock.proxyHost && lock.proxyPort) {
+                 return callRemoteBackendTool(lock.proxyHost, lock.proxyPort, lang, toolName, nextArgs, langWorkspace);
+               }
+               return backendManager.callTool(lang, toolName, nextArgs);
              };
              const startAndSyncBackend = async (lang: string) => {
                const lock = await getSingletonLock(lang);
@@ -2192,8 +2252,9 @@ function preRegisterTools(): void {
                if (lock.proxyHost && lock.proxyPort) return true;
                await backendManager.getBackend(lang);
                startedBackends.add(lang);
-               if (requestedWorkspacePath) {
-                 await backendManager.callTool(lang, "switch_workspace", { path: requestedWorkspacePath });
+               const langWorkspace = resolveWorkspaceForLanguage(lang);
+               if (langWorkspace) {
+                 await backendManager.callTool(lang, "switch_workspace", { path: langWorkspace });
                }
                return true;
              };
@@ -2327,10 +2388,15 @@ function preRegisterTools(): void {
           };
         }
 
+        const languageWorkspace = getWorkspaceForLanguage(language);
+        if (!path.isAbsolute(filePath) && languageWorkspace) {
+          absPath = path.join(languageWorkspace, filePath);
+        }
+
         const isVueFragileTool = language === "vue" && isVueFragileToolName(tool.name);
         const isVueSemanticTool = language === "vue" && isVueSemanticToolName(tool.name);
         const isVueFallbackCapableTool = language === "vue" && (isVueFragileToolName(tool.name) || tool.name === "diagnostics");
-        const lockWorkspace = activeWorkspacePath || absPath;
+        const lockWorkspace = languageWorkspace || activeWorkspacePath || absPath;
         const singletonLock = await ensureBackendSingleton(language, lockWorkspace);
         if (!singletonLock.ok) {
           return singletonLock.response;
@@ -2341,7 +2407,7 @@ function preRegisterTools(): void {
         const missingVueToolDeps = !hasProxy && isVueFallbackCapableTool && vueSemanticDepsMissing(lockWorkspace, absPath);
         const callBackendTool = (toolName: string, backendArgs: Record<string, unknown>) => {
           if (proxyHost && proxyPort) {
-            return callRemoteBackendTool(proxyHost, proxyPort, language, toolName, backendArgs, activeWorkspacePath || lockWorkspace);
+            return callRemoteBackendTool(proxyHost, proxyPort, language, toolName, backendArgs, languageWorkspace || lockWorkspace);
           }
           return backendManager.callTool(language, toolName, backendArgs);
         };
@@ -2354,10 +2420,10 @@ function preRegisterTools(): void {
             startedBackends.add(language);
 
             // Sync active workspace if set
-            if (activeWorkspacePath) {
-              console.error(`[lsp-mcp] Syncing active workspace to ${language}: ${activeWorkspacePath}`);
+            if (languageWorkspace) {
+              console.error(`[lsp-mcp] Syncing active workspace to ${language}: ${languageWorkspace}`);
               try {
-                await backendManager.callTool(language, "switch_workspace", { path: activeWorkspacePath });
+                await backendManager.callTool(language, "switch_workspace", { path: languageWorkspace });
               } catch (syncError) {
                 console.error(`[lsp-mcp] Failed to sync workspace to ${language}:`, syncError);
               }
@@ -2501,8 +2567,8 @@ function preRegisterTools(): void {
             }
 
             let defAbsPath = defPath;
-            if (!path.isAbsolute(defPath) && activeWorkspacePath) {
-                 defAbsPath = path.join(activeWorkspacePath, defPath);
+            if (!path.isAbsolute(defPath) && (languageWorkspace || activeWorkspacePath)) {
+                 defAbsPath = path.join(languageWorkspace || activeWorkspacePath!, defPath);
             }
             
             if (!fs.existsSync(defAbsPath)) {
@@ -2574,8 +2640,8 @@ function preRegisterTools(): void {
             // Workaround: We require absolute path or relative to cwd?
             // Actually, we can rely on activeWorkspacePath global if set.
             let absPath = filePath;
-            if (!path.isAbsolute(filePath) && activeWorkspacePath) {
-                absPath = path.join(activeWorkspacePath, filePath);
+            if (!path.isAbsolute(filePath) && (languageWorkspace || activeWorkspacePath)) {
+                absPath = path.join(languageWorkspace || activeWorkspacePath!, filePath);
             }
             
             if (!fs.existsSync(absPath)) {
@@ -2716,19 +2782,19 @@ function preRegisterTools(): void {
         // Call the actual backend tool
         if (missingVueToolDeps) {
           if (VUE_STRICT_SEMANTIC && isVueSemanticTool) {
-            return buildVueMissingDepsErrorResponse(tool.name, activeWorkspacePath);
+            return buildVueMissingDepsErrorResponse(tool.name, languageWorkspace || activeWorkspacePath);
           }
           if (tool.name === "diagnostics") {
             return buildVueDiagnosticsFallback(args as Record<string, unknown>);
           }
           if (isVueFragileTool && typeof filePath === "string") {
-            const fallback = buildVueFallbackResponse(tool.name, filePath, backendArgs, activeWorkspacePath);
+            const fallback = buildVueFallbackResponse(tool.name, filePath, backendArgs, languageWorkspace || activeWorkspacePath || undefined);
             if (fallback) {
               return fallback;
             }
           }
           if (isVueSemanticTool) {
-            return buildVueMissingDepsErrorResponse(tool.name, activeWorkspacePath);
+            return buildVueMissingDepsErrorResponse(tool.name, languageWorkspace || activeWorkspacePath);
           }
         }
         let backendResult;
@@ -2739,7 +2805,7 @@ function preRegisterTools(): void {
             : await callPromise;
         } catch (error) {
           if (isVueFragileTool && typeof filePath === "string") {
-            const fallback = buildVueFallbackResponse(tool.name, filePath, backendArgs, activeWorkspacePath);
+            const fallback = buildVueFallbackResponse(tool.name, filePath, backendArgs, languageWorkspace || activeWorkspacePath || undefined);
             if (fallback) {
               return fallback;
             }
@@ -2758,7 +2824,7 @@ function preRegisterTools(): void {
               (tool.name === "definition" && !!parsed?.error) ||
               (tool.name === "references" && (!!parsed?.error || referenceItems.length === 0));
             if (shouldFallback && typeof filePath === "string") {
-              const fallback = buildVueFallbackResponse(tool.name, filePath, backendArgs, activeWorkspacePath);
+              const fallback = buildVueFallbackResponse(tool.name, filePath, backendArgs, languageWorkspace || activeWorkspacePath || undefined);
               if (fallback) {
                 return fallback;
               }
@@ -2933,7 +2999,8 @@ function preRegisterTools(): void {
           inputSchema: tool.schema,
         },
         async (args) => {
-          const lockWorkspace = activeWorkspacePath || (args.file as string) || (args.path as string) || null;
+          const languageWorkspace = getWorkspaceForLanguage(language as Language);
+          const lockWorkspace = languageWorkspace || activeWorkspacePath || (args.file as string) || (args.path as string) || null;
           const singletonLock = await ensureBackendSingleton(language, lockWorkspace);
           if (!singletonLock.ok) {
             return singletonLock.response;
@@ -2946,10 +3013,10 @@ function preRegisterTools(): void {
             await backendManager.getBackend(language);
             startedBackends.add(language);
 
-            if (activeWorkspacePath) {
-              console.error(`[lsp-mcp] Syncing active workspace to ${language}: ${activeWorkspacePath}`);
+            if (languageWorkspace) {
+              console.error(`[lsp-mcp] Syncing active workspace to ${language}: ${languageWorkspace}`);
               try {
-                await backendManager.callTool(language, "switch_workspace", { path: activeWorkspacePath });
+                await backendManager.callTool(language, "switch_workspace", { path: languageWorkspace });
               } catch (syncError) {
                 console.error(`[lsp-mcp] Failed to sync workspace to ${language}:`, syncError);
               }
@@ -2966,7 +3033,7 @@ function preRegisterTools(): void {
           }
 
           if (proxyHost && proxyPort) {
-            return callRemoteBackendTool(proxyHost, proxyPort, language, tool.name, backendArgs, activeWorkspacePath || lockWorkspace);
+            return callRemoteBackendTool(proxyHost, proxyPort, language, tool.name, backendArgs, languageWorkspace || lockWorkspace);
           }
           return backendManager.callTool(language, tool.name, backendArgs);
         }
@@ -2993,7 +3060,8 @@ function preRegisterTools(): void {
           inputSchema: tool.schema,
         },
         async (args) => {
-          const lockWorkspace = activeWorkspacePath || (args.file as string) || (args.path as string) || null;
+          const languageWorkspace = getWorkspaceForLanguage(language as Language);
+          const lockWorkspace = languageWorkspace || activeWorkspacePath || (args.file as string) || (args.path as string) || null;
           const singletonLock = await ensureBackendSingleton(language, lockWorkspace);
           if (!singletonLock.ok) {
             return singletonLock.response;
@@ -3007,17 +3075,17 @@ function preRegisterTools(): void {
             startedBackends.add(language);
 
             // Sync active workspace if set
-            if (activeWorkspacePath) {
-              console.error(`[lsp-mcp] Syncing active workspace to ${language}: ${activeWorkspacePath}`);
+            if (languageWorkspace) {
+              console.error(`[lsp-mcp] Syncing active workspace to ${language}: ${languageWorkspace}`);
               try {
-                await backendManager.callTool(language, "switch_workspace", { path: activeWorkspacePath });
+                await backendManager.callTool(language, "switch_workspace", { path: languageWorkspace });
               } catch (syncError) {
                 console.error(`[lsp-mcp] Failed to sync workspace to ${language}:`, syncError);
               }
             }
           }
           if (proxyHost && proxyPort) {
-            return callRemoteBackendTool(proxyHost, proxyPort, language, tool.name, args as Record<string, unknown>, activeWorkspacePath || lockWorkspace);
+            return callRemoteBackendTool(proxyHost, proxyPort, language, tool.name, args as Record<string, unknown>, languageWorkspace || lockWorkspace);
           }
           return backendManager.callTool(language, tool.name, args as Record<string, unknown>);
         }

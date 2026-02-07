@@ -48,6 +48,16 @@ describe("Unified Search", () => {
     expect(result.matches.length).toBeGreaterThan(0);
   });
 
+  it("should prefer language-specific workspace over global workspace", async () => {
+    await client.callTool("switch_workspace", { path: os.tmpdir() });
+    await client.callTool("switch_workspace_for_language", { language: "typescript", path: TEST_DIR });
+    const result = await client.callTool("search", { query: MARKER });
+
+    expect(result.error).toBeUndefined();
+    expect(Array.isArray(result.matches)).toBe(true);
+    expect(result.matches.length).toBeGreaterThan(0);
+  });
+
   it("should accept query alias for search pattern", async () => {
     await client.callTool("switch_workspace", { path: TEST_DIR });
     const result = await client.callTool("search", { query: MARKER });
