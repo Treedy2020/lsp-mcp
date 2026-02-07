@@ -18,6 +18,9 @@ describe("TypeScript Hierarchy Tools", () => {
     fs.writeFileSync(
       TEST_FILE,
       [
+        "import { readFileSync } from 'fs';",
+        "const docsUrl = 'https://example.com/docs';",
+        "",
         "interface NodeItem {",
         "  id: string;",
         "}",
@@ -61,7 +64,7 @@ describe("TypeScript Hierarchy Tools", () => {
   it("should return call hierarchy for function symbol", async () => {
     const result = await client.callTool("call_hierarchy", {
       file: TEST_FILE,
-      line: 5,
+      line: 8,
       column: 10,
       direction: "both",
     });
@@ -87,7 +90,7 @@ describe("TypeScript Hierarchy Tools", () => {
   it("should return document highlights for symbol", async () => {
     const result = await client.callTool("document_highlight", {
       file: TEST_FILE,
-      line: 5,
+      line: 8,
       column: 10,
     });
     expect(result.error).toBeUndefined();
@@ -98,7 +101,7 @@ describe("TypeScript Hierarchy Tools", () => {
   it("should return code lens style summary", async () => {
     const result = await client.callTool("code_lens", {
       file: TEST_FILE,
-      line: 5,
+      line: 8,
       column: 10,
     });
     expect(result.error).toBeUndefined();
@@ -109,7 +112,7 @@ describe("TypeScript Hierarchy Tools", () => {
   it("should return nested selection ranges", async () => {
     const result = await client.callTool("selection_range", {
       file: TEST_FILE,
-      line: 6,
+      line: 8,
       column: 10,
     });
     expect(result.error).toBeUndefined();
@@ -124,5 +127,26 @@ describe("TypeScript Hierarchy Tools", () => {
     expect(result.error).toBeUndefined();
     expect(Array.isArray(result.ranges)).toBe(true);
     expect(result.count).toBeGreaterThan(0);
+  });
+
+  it("should return document links (imports and urls)", async () => {
+    const result = await client.callTool("document_link", {
+      file: TEST_FILE,
+    });
+    expect(result.error).toBeUndefined();
+    expect(Array.isArray(result.links)).toBe(true);
+    expect(result.count).toBeGreaterThan(0);
+    expect(result.links.some((link: any) => link.target === "fs")).toBe(true);
+    expect(result.links.some((link: any) => String(link.target).includes("https://example.com"))).toBe(true);
+  });
+
+  it("should return strict not-implemented for linked editing range", async () => {
+    const result = await client.callTool("linked_editing_range", {
+      file: TEST_FILE,
+      line: 1,
+      column: 10,
+    });
+    expect(result.error_code).toBe("NOT_IMPLEMENTED");
+    expect(result.strict_mode).toBe(true);
   });
 });

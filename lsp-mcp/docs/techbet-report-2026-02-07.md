@@ -110,12 +110,12 @@ bun test test/integration/meta.test.ts test/integration/vue-strict-semantic.test
 - [x] `code_lens` unified wrapper with compact summaries (TypeScript implemented; Python/Vue pending).
 - [x] `document_highlight` for fast local symbol understanding (TypeScript implemented; Python/Vue pending).
 - [x] `selection_range` and `folding_range` for chunk-level edits (TypeScript implemented; Python/Vue pending).
-- [ ] `document_link` extraction for config/router/resource jumps.
+- [x] `document_link` extraction for config/router/resource jumps (TypeScript implemented; Python/Vue pending).
 
 ### P2 - Advanced capability
 
 - [ ] `semantic_tokens` for richer structure-aware reading.
-- [ ] `linked_editing_range` for paired structural edits (Vue/HTML-like contexts).
+- [~] `linked_editing_range` for paired structural edits (strict `NOT_IMPLEMENTED` exposed; backend implementations pending).
 - [ ] `moniker` for cross-package symbol identity.
 - [ ] `inlay_hint/resolve` optimization path for large files.
 
