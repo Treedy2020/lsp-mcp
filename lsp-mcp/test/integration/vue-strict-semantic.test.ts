@@ -49,6 +49,7 @@ describe("Vue Strict Semantic Dependencies", () => {
 
     expect(result.error).toBe("SEMANTIC_DEPENDENCIES_MISSING");
     expect(result.error_code).toBe("VUE_SEMANTIC_DEPS_MISSING");
+    expect(result.resolved_language).toBe("vue");
     expect(result.strict_mode).toBe(true);
     expect(result.missing_packages).toContain("typescript");
     expect(result.missing_packages).toContain("@vue/language-server");

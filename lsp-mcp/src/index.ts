@@ -112,6 +112,7 @@ function semanticWorkspaceRequiredResponse(language: Language, toolName: string)
         error_code: "LANGUAGE_WORKSPACE_REQUIRED",
         message: `Tool '${toolName}' requires an explicit workspace for '${language}'.`,
         language,
+        resolved_language: language,
         tool: toolName,
         strict_mode: true,
         missing_workspace_for_language: language,
@@ -130,9 +131,16 @@ function withSemanticContext(
   response: { content: Array<{ type: "text"; text: string }> },
   toolName: string,
   resolvedWorkspace: string | null,
-  backendInstanceId: string | null
+  backendInstanceId: string | null,
+  resolvedLanguage?: Language | "multi" | null
 ): { content: Array<{ type: "text"; text: string }> } {
   if (!isSemanticTool(toolName)) return response;
+  const languageFromBackendId = (() => {
+    if (!backendInstanceId) return null;
+    const m = /^proxy:(python|typescript|vue)@/.exec(backendInstanceId);
+    return m?.[1] ?? null;
+  })();
+  const effectiveLanguage = resolvedLanguage ?? languageFromBackendId;
   const first = response.content?.[0];
   if (!first || first.type !== "text") return response;
   try {
@@ -143,6 +151,7 @@ function withSemanticContext(
           type: "text",
           text: JSON.stringify({
             result: parsed,
+            resolved_language: effectiveLanguage,
             resolved_workspace: resolvedWorkspace,
             backend_instance_id: backendInstanceId,
           }),
@@ -154,6 +163,7 @@ function withSemanticContext(
         type: "text",
         text: JSON.stringify({
           ...parsed,
+          resolved_language: parsed.resolved_language ?? parsed.language ?? effectiveLanguage,
           resolved_workspace: resolvedWorkspace,
           backend_instance_id: backendInstanceId,
         }),
@@ -165,6 +175,7 @@ function withSemanticContext(
         type: "text",
         text: JSON.stringify({
           result: first.text,
+          resolved_language: effectiveLanguage,
           resolved_workspace: resolvedWorkspace,
           backend_instance_id: backendInstanceId,
         }),
@@ -2901,7 +2912,7 @@ function preRegisterTools(): void {
         const lockWorkspace = resolvedWorkspace || absPath;
         const singletonLock = await ensureBackendSingleton(language, lockWorkspace);
         if (!singletonLock.ok) {
-          return withSemanticContext(singletonLock.response, tool.name, resolvedWorkspace, null);
+          return withSemanticContext(singletonLock.response, tool.name, resolvedWorkspace, null, language);
         }
         const proxyHost = singletonLock.proxyHost;
         const proxyPort = singletonLock.proxyPort;
@@ -2952,7 +2963,7 @@ function preRegisterTools(): void {
                   details: msg,
                   hint: hint
               }, null, 2) }],
-            }, tool.name, resolvedWorkspace, backendInstanceId());
+            }, tool.name, resolvedWorkspace, backendInstanceId(), language);
           }
         }
 
@@ -2980,7 +2991,7 @@ function preRegisterTools(): void {
                   })
                 },
               ],
-            }, tool.name, resolvedWorkspace, backendInstanceId());
+            }, tool.name, resolvedWorkspace, backendInstanceId(), language);
           }
         }
 
@@ -3053,7 +3064,7 @@ function preRegisterTools(): void {
             const parsed = JSON.parse(result.content[0].text);
             
             if (parsed.error) {
-               return withSemanticContext({ content: [{ type: "text", text: JSON.stringify(parsed) }] }, tool.name, resolvedWorkspace, backendInstanceId());
+               return withSemanticContext({ content: [{ type: "text", text: JSON.stringify(parsed) }] }, tool.name, resolvedWorkspace, backendInstanceId(), language);
             }
 
             // Definition can be array or single object
@@ -3061,7 +3072,7 @@ function preRegisterTools(): void {
             if (parsed.matches) locs = parsed.matches; // Handle standardized matches format
             
             if (!locs || locs.length === 0) {
-                return withSemanticContext({ content: [{ type: "text", text: JSON.stringify({ message: "No definition found" }) }] }, tool.name, resolvedWorkspace, backendInstanceId());
+                return withSemanticContext({ content: [{ type: "text", text: JSON.stringify({ message: "No definition found" }) }] }, tool.name, resolvedWorkspace, backendInstanceId(), language);
             }
 
             // Take the first definition
@@ -3069,7 +3080,7 @@ function preRegisterTools(): void {
             const defPath = def.file || def.uri; // Handle potential naming diffs
             
             if (!defPath) {
-                 return withSemanticContext({ content: [{ type: "text", text: JSON.stringify({ error: "Invalid definition result", raw: parsed }) }] }, tool.name, resolvedWorkspace, backendInstanceId());
+                 return withSemanticContext({ content: [{ type: "text", text: JSON.stringify({ error: "Invalid definition result", raw: parsed }) }] }, tool.name, resolvedWorkspace, backendInstanceId(), language);
             }
 
             let defAbsPath = defPath;
@@ -3078,7 +3089,7 @@ function preRegisterTools(): void {
             }
             
             if (!fs.existsSync(defAbsPath)) {
-                 return withSemanticContext({ content: [{ type: "text", text: JSON.stringify({ error: `Definition file not found: ${defAbsPath}`, location: def }) }] }, tool.name, resolvedWorkspace, backendInstanceId());
+                 return withSemanticContext({ content: [{ type: "text", text: JSON.stringify({ error: `Definition file not found: ${defAbsPath}`, location: def }) }] }, tool.name, resolvedWorkspace, backendInstanceId(), language);
             }
 
             // 2. Read file context
@@ -3118,12 +3129,12 @@ function preRegisterTools(): void {
                                  
             return withSemanticContext({
                 content: [{ type: "text", text: responseText }]
-            }, tool.name, resolvedWorkspace, backendInstanceId());
+            }, tool.name, resolvedWorkspace, backendInstanceId(), language);
 
           } catch (error) {
             return withSemanticContext({
               content: [{ type: "text", text: JSON.stringify({ error: `Failed to peek definition: ${error}` }) }],
-            }, tool.name, resolvedWorkspace, backendInstanceId());
+            }, tool.name, resolvedWorkspace, backendInstanceId(), language);
           }
         }
 
@@ -3151,7 +3162,7 @@ function preRegisterTools(): void {
             }
             
             if (!fs.existsSync(absPath)) {
-                 return withSemanticContext({ content: [{ type: "text", text: JSON.stringify({ error: `File not found: ${absPath}` }) }] }, tool.name, resolvedWorkspace, backendInstanceId());
+                 return withSemanticContext({ content: [{ type: "text", text: JSON.stringify({ error: `File not found: ${absPath}` }) }] }, tool.name, resolvedWorkspace, backendInstanceId(), language);
             }
             
             const content = fs.readFileSync(absPath, "utf-8");
@@ -3169,7 +3180,7 @@ function preRegisterTools(): void {
               if (parsed?.error) {
                 const errorText = typeof parsed.error === "string" ? parsed.error : JSON.stringify(parsed.error);
                 if (!isInlayHintUnsupportedError(errorText)) {
-                  return withSemanticContext({ content: [{ type: "text", text: JSON.stringify(parsed) }] }, tool.name, resolvedWorkspace, backendInstanceId());
+                  return withSemanticContext({ content: [{ type: "text", text: JSON.stringify(parsed) }] }, tool.name, resolvedWorkspace, backendInstanceId(), language);
                 }
               } else {
                 hints = Array.isArray(parsed?.hints) ? parsed.hints : [];
@@ -3179,7 +3190,7 @@ function preRegisterTools(): void {
               if (!isInlayHintUnsupportedError(errorText)) {
                 return withSemanticContext({
                   content: [{ type: "text", text: JSON.stringify({ error: `Failed to read file with hints: ${error}` }) }],
-                }, tool.name, resolvedWorkspace, backendInstanceId());
+                }, tool.name, resolvedWorkspace, backendInstanceId(), language);
               }
             }
             
@@ -3213,7 +3224,7 @@ function preRegisterTools(): void {
                       : null,
                   }),
                 }],
-              }, tool.name, resolvedWorkspace, backendInstanceId());
+              }, tool.name, resolvedWorkspace, backendInstanceId(), language);
             }
 
             const startIdx = Math.max(0, startLine - 1);
@@ -3226,7 +3237,7 @@ function preRegisterTools(): void {
                   type: "text",
                   text: contentWithHints
                 }]
-              }, tool.name, resolvedWorkspace, backendInstanceId());
+              }, tool.name, resolvedWorkspace, backendInstanceId(), language);
             }
 
             const snippet = allLines
@@ -3239,11 +3250,11 @@ function preRegisterTools(): void {
                 type: "text",
                 text: `File preview for ${filePath} (lines ${startIdx + 1}-${endIdx} of ${allLines.length}):\n\n${snippet}\n\n(Use start_line/max_lines to expand.)`
               }]
-            }, tool.name, resolvedWorkspace, backendInstanceId());
+            }, tool.name, resolvedWorkspace, backendInstanceId(), language);
           } catch (error) {
             return withSemanticContext({
               content: [{ type: "text", text: JSON.stringify({ error: `Failed to read file with hints: ${error}` }) }],
-            }, tool.name, resolvedWorkspace, backendInstanceId());
+            }, tool.name, resolvedWorkspace, backendInstanceId(), language);
           }
         }
 
@@ -3288,19 +3299,19 @@ function preRegisterTools(): void {
         // Call the actual backend tool
         if (missingVueToolDeps) {
           if (VUE_STRICT_SEMANTIC && isVueSemanticTool) {
-            return withSemanticContext(buildVueMissingDepsErrorResponse(tool.name, resolvedWorkspace), tool.name, resolvedWorkspace, backendInstanceId());
+            return withSemanticContext(buildVueMissingDepsErrorResponse(tool.name, resolvedWorkspace), tool.name, resolvedWorkspace, backendInstanceId(), language);
           }
           if (tool.name === "diagnostics") {
-            return withSemanticContext(buildVueDiagnosticsFallback(args as Record<string, unknown>), tool.name, resolvedWorkspace, backendInstanceId());
+            return withSemanticContext(buildVueDiagnosticsFallback(args as Record<string, unknown>), tool.name, resolvedWorkspace, backendInstanceId(), language);
           }
           if (isVueFragileTool && typeof filePath === "string") {
             const fallback = buildVueFallbackResponse(tool.name, filePath, backendArgs, resolvedWorkspace || undefined);
             if (fallback) {
-              return withSemanticContext(fallback, tool.name, resolvedWorkspace, backendInstanceId());
+              return withSemanticContext(fallback, tool.name, resolvedWorkspace, backendInstanceId(), language);
             }
           }
           if (isVueSemanticTool) {
-            return withSemanticContext(buildVueMissingDepsErrorResponse(tool.name, resolvedWorkspace), tool.name, resolvedWorkspace, backendInstanceId());
+            return withSemanticContext(buildVueMissingDepsErrorResponse(tool.name, resolvedWorkspace), tool.name, resolvedWorkspace, backendInstanceId(), language);
           }
         }
         let backendResult;
@@ -3313,7 +3324,7 @@ function preRegisterTools(): void {
           if (isVueFragileTool && typeof filePath === "string") {
             const fallback = buildVueFallbackResponse(tool.name, filePath, backendArgs, resolvedWorkspace || undefined);
             if (fallback) {
-              return withSemanticContext(fallback, tool.name, resolvedWorkspace, backendInstanceId());
+              return withSemanticContext(fallback, tool.name, resolvedWorkspace, backendInstanceId(), language);
             }
           }
           throw error;
@@ -3332,7 +3343,7 @@ function preRegisterTools(): void {
             if (shouldFallback && typeof filePath === "string") {
               const fallback = buildVueFallbackResponse(tool.name, filePath, backendArgs, resolvedWorkspace || undefined);
               if (fallback) {
-                return withSemanticContext(fallback, tool.name, resolvedWorkspace, backendInstanceId());
+                return withSemanticContext(fallback, tool.name, resolvedWorkspace, backendInstanceId(), language);
               }
             }
           } catch {
@@ -3375,7 +3386,7 @@ function preRegisterTools(): void {
               }],
             };
           } catch {
-            return withSemanticContext(backendResult, tool.name, resolvedWorkspace, backendInstanceId());
+            return withSemanticContext(backendResult, tool.name, resolvedWorkspace, backendInstanceId(), language);
           }
         }
 
@@ -3409,9 +3420,9 @@ function preRegisterTools(): void {
                     : null,
                 }),
               }],
-            }, tool.name, resolvedWorkspace, backendInstanceId());
+            }, tool.name, resolvedWorkspace, backendInstanceId(), language);
           } catch {
-            return withSemanticContext(backendResult, tool.name, resolvedWorkspace, backendInstanceId());
+            return withSemanticContext(backendResult, tool.name, resolvedWorkspace, backendInstanceId(), language);
           }
         }
 
@@ -3423,7 +3434,7 @@ function preRegisterTools(): void {
               : Array.isArray(parsed.diagnostics)
                 ? parsed.diagnostics
                 : null;
-            if (!diagnostics) return withSemanticContext(backendResult, tool.name, resolvedWorkspace, backendInstanceId());
+            if (!diagnostics) return withSemanticContext(backendResult, tool.name, resolvedWorkspace, backendInstanceId(), language);
 
             const pageSize = typeof args.page_size === "number"
               ? args.page_size
@@ -3463,7 +3474,7 @@ function preRegisterTools(): void {
                       : null,
                   }),
                 }],
-              }, tool.name, resolvedWorkspace, backendInstanceId());
+              }, tool.name, resolvedWorkspace, backendInstanceId(), language);
             }
 
             const summary = {
@@ -3492,13 +3503,13 @@ function preRegisterTools(): void {
                     : null,
                 }),
               }],
-            }, tool.name, resolvedWorkspace, backendInstanceId());
+            }, tool.name, resolvedWorkspace, backendInstanceId(), language);
           } catch {
-            return withSemanticContext(backendResult, tool.name, resolvedWorkspace, backendInstanceId());
+            return withSemanticContext(backendResult, tool.name, resolvedWorkspace, backendInstanceId(), language);
           }
         }
 
-        return withSemanticContext(backendResult, tool.name, resolvedWorkspace, backendInstanceId());
+        return withSemanticContext(backendResult, tool.name, resolvedWorkspace, backendInstanceId(), language);
       }
     );
     registeredTools.add(tool.name);
@@ -3530,7 +3541,7 @@ function preRegisterTools(): void {
           const lockWorkspace = resolvedWorkspace || (args.file as string) || (args.path as string) || null;
           const singletonLock = await ensureBackendSingleton(language, lockWorkspace);
           if (!singletonLock.ok) {
-            return withSemanticContext(singletonLock.response, tool.name, resolvedWorkspace, null);
+            return withSemanticContext(singletonLock.response, tool.name, resolvedWorkspace, null, languageName);
           }
           const proxyHost = singletonLock.proxyHost;
           const proxyPort = singletonLock.proxyPort;
@@ -3567,14 +3578,16 @@ function preRegisterTools(): void {
               await callRemoteBackendTool(proxyHost, proxyPort, language, tool.name, backendArgs, resolvedWorkspace || lockWorkspace),
               tool.name,
               resolvedWorkspace,
-              backendInstanceId
+              backendInstanceId,
+              languageName
             );
           }
           return withSemanticContext(
             await backendManager.callTool(languageName, tool.name, backendArgs),
             tool.name,
             resolvedWorkspace,
-            backendInstanceId
+            backendInstanceId,
+            languageName
           );
         }
       );
@@ -3609,7 +3622,7 @@ function preRegisterTools(): void {
           const lockWorkspace = resolvedWorkspace || (args.file as string) || (args.path as string) || null;
           const singletonLock = await ensureBackendSingleton(language, lockWorkspace);
           if (!singletonLock.ok) {
-            return withSemanticContext(singletonLock.response, tool.name, resolvedWorkspace, null);
+            return withSemanticContext(singletonLock.response, tool.name, resolvedWorkspace, null, languageName);
           }
           const proxyHost = singletonLock.proxyHost;
           const proxyPort = singletonLock.proxyPort;
@@ -3637,14 +3650,16 @@ function preRegisterTools(): void {
               await callRemoteBackendTool(proxyHost, proxyPort, language, tool.name, args as Record<string, unknown>, resolvedWorkspace || lockWorkspace),
               tool.name,
               resolvedWorkspace,
-              backendInstanceId
+              backendInstanceId,
+              languageName
             );
           }
           return withSemanticContext(
             await backendManager.callTool(languageName, tool.name, args as Record<string, unknown>),
             tool.name,
             resolvedWorkspace,
-            backendInstanceId
+            backendInstanceId,
+            languageName
           );
         }
       );

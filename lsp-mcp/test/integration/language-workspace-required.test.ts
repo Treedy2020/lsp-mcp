@@ -40,6 +40,7 @@ describe("Language Workspace Requirement", () => {
     expect(result.missing_packages.length).toBe(0);
     expect(result.required_workspace_scope).toBe("language");
     expect(result.language).toBe("typescript");
+    expect(result.resolved_language).toBe("typescript");
     expect(result.resolved_workspace).toBeNull();
     expect(result.backend_instance_id).toBeNull();
   });
