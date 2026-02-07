@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "child_process";
 import * as path from "path";
+import * as fs from "fs";
 import { createInterface } from "readline";
 
 export class McpTestClient {
@@ -9,10 +10,22 @@ export class McpTestClient {
   public notifications: any[] = [];
 
   constructor(serverPath: string, options: { cwd?: string, env?: NodeJS.ProcessEnv } = {}) {
-    // Run the TS source directly using bun
-    this.process = spawn("bun", ["run", serverPath], {
+    const preferredServerPath = this.resolveServerPath(serverPath);
+    const isTypeScriptEntry = preferredServerPath.endsWith(".ts");
+    const command = isTypeScriptEntry ? "bun" : "node";
+    const args = isTypeScriptEntry ? ["run", preferredServerPath] : [preferredServerPath];
+
+    // Default to strict bundled mode for integration tests.
+    const env = {
+      ...process.env,
+      LSP_MCP_REQUIRE_BUNDLED_BACKENDS: process.env.LSP_MCP_REQUIRE_BUNDLED_BACKENDS ?? "true",
+      ...options.env,
+      PATH: process.env.PATH,
+    };
+
+    this.process = spawn(command, args, {
       stdio: ["pipe", "pipe", "inherit"], // inherit stderr for logs
-      env: { ...process.env, ...options.env, "PATH": process.env.PATH },
+      env,
       cwd: options.cwd
     });
 
@@ -34,6 +47,18 @@ export class McpTestClient {
         // ignore non-json lines
       }
     });
+  }
+
+  private resolveServerPath(serverPath: string): string {
+    // Prefer local build output so tests exercise bundled behavior.
+    // Can be disabled by setting LSP_MCP_TEST_USE_DIST=false.
+    if ((process.env.LSP_MCP_TEST_USE_DIST ?? "true").toLowerCase() !== "false") {
+      const distCandidate = path.resolve(path.dirname(serverPath), "..", "dist", "index.js");
+      if (fs.existsSync(distCandidate)) {
+        return distCandidate;
+      }
+    }
+    return serverPath;
   }
 
   async request(method: string, params?: any): Promise<any> {
