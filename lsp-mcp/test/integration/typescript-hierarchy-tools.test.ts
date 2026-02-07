@@ -75,4 +75,26 @@ describe("TypeScript Hierarchy Tools", () => {
     expect(result.strict_mode).toBe(true);
     expect(result.next_step).toBeDefined();
   });
+
+  it("should return document highlights for symbol", async () => {
+    const result = await client.callTool("document_highlight", {
+      file: TEST_FILE,
+      line: 1,
+      column: 10,
+    });
+    expect(result.error).toBeUndefined();
+    expect(Array.isArray(result.highlights)).toBe(true);
+    expect(result.count).toBeGreaterThan(0);
+  });
+
+  it("should return code lens style summary", async () => {
+    const result = await client.callTool("code_lens", {
+      file: TEST_FILE,
+      line: 1,
+      column: 10,
+    });
+    expect(result.error).toBeUndefined();
+    expect(Array.isArray(result.lenses)).toBe(true);
+    expect(result.references_count).toBeGreaterThan(0);
+  });
 });

@@ -107,8 +107,8 @@ bun test test/integration/meta.test.ts test/integration/vue-strict-semantic.test
 
 - [x] `call_hierarchy` (TypeScript implemented end-to-end; Python/Vue pending by backend capability).
 - [~] `type_hierarchy` unified wrapper (strict `NOT_IMPLEMENTED` surfaced; backend implementations pending).
-- [ ] `code_lens` unified wrapper with compact summaries.
-- [ ] `document_highlight` for fast local symbol understanding.
+- [x] `code_lens` unified wrapper with compact summaries (TypeScript implemented; Python/Vue pending).
+- [x] `document_highlight` for fast local symbol understanding (TypeScript implemented; Python/Vue pending).
 - [ ] `selection_range` and `folding_range` for chunk-level edits.
 - [ ] `document_link` extraction for config/router/resource jumps.
 
