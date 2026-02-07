@@ -26,6 +26,8 @@ describe("TypeScript Integration (Zod)", () => {
     });
 
     expect(result.contents).toContain("jsonStringifyReplacer");
+    expect(result.resolved_workspace).toBe(WORKSPACE_ROOT);
+    expect(typeof result.backend_instance_id).toBe("string");
   }, 60000);
 
   it("should find references for jsonStringifyReplacer", async () => {
@@ -37,6 +39,8 @@ describe("TypeScript Integration (Zod)", () => {
 
     expect(result.count).toBeGreaterThan(0);
     expect(result.references[0].file).toContain("util.ts");
+    expect(result.resolved_workspace).toBe(WORKSPACE_ROOT);
+    expect(typeof result.backend_instance_id).toBe("string");
   }, 60000);
   
   it("should return inlay hints via read_file_with_hints", async () => {
@@ -45,10 +49,13 @@ describe("TypeScript Integration (Zod)", () => {
       const result = await client.callTool("read_file_with_hints", {
           file: "packages/zod/src/v4/core/util.ts"
       });
-      
+
+      const content = typeof result.result === "string" ? result.result : "";
       // Look for type annotations inserted by our tool
       // "/*:" is the marker for type hint
-      expect(result).toContain("/*:");
+      expect(content).toContain("/*:");
+      expect(result.resolved_workspace).toBe(WORKSPACE_ROOT);
+      expect(typeof result.backend_instance_id).toBe("string");
   }, 60000);
 
   it("should list symbols with query", async () => {

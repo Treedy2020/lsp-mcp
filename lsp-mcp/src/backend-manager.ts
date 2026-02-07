@@ -15,6 +15,7 @@ import type { Language, Config } from "./config.js";
 import { getBackendCommand } from "./config.js";
 
 interface BackendState {
+  instanceId: string;
   client: Client;
   transport: StdioClientTransport;
   tools: Tool[];
@@ -41,6 +42,7 @@ export interface BackendVersionInfo {
 export class BackendManager {
   private backends: Map<Language, BackendState> = new Map();
   private startPromises: Map<Language, Promise<BackendState>> = new Map();
+  private instanceCounter = 0;
   private config: Config;
   private idleCheckInterval: NodeJS.Timer | null = null;
   private isShuttingDown = false;
@@ -256,6 +258,7 @@ export class BackendManager {
 
     // Create initial state
     const state: BackendState = {
+      instanceId: `${language}-${Date.now()}-${++this.instanceCounter}`,
       client,
       transport,
       tools: [],
@@ -412,11 +415,11 @@ export class BackendManager {
    */
   getStatus(): Record<
     Language,
-    { status: string; tools: number; restartCount: number; error?: string; version?: string; serverName?: string }
+    { status: string; tools: number; restartCount: number; error?: string; version?: string; serverName?: string; instanceId?: string }
   > {
     const status: Record<
       string,
-      { status: string; tools: number; restartCount: number; error?: string; version?: string; serverName?: string }
+      { status: string; tools: number; restartCount: number; error?: string; version?: string; serverName?: string; instanceId?: string }
     > = {};
 
     for (const [lang, state] of this.backends) {
@@ -427,6 +430,7 @@ export class BackendManager {
         error: state.lastError,
         version: state.serverInfo?.version,
         serverName: state.serverInfo?.name,
+        instanceId: state.instanceId,
       };
     }
 
@@ -439,8 +443,18 @@ export class BackendManager {
 
     return status as Record<
       Language,
-      { status: string; tools: number; restartCount: number; error?: string; version?: string; serverName?: string }
+      { status: string; tools: number; restartCount: number; error?: string; version?: string; serverName?: string; instanceId?: string }
     >;
+  }
+
+  getBackendIdentity(language: Language): { instanceId: string; serverName?: string; version?: string } | null {
+    const state = this.backends.get(language);
+    if (!state) return null;
+    return {
+      instanceId: state.instanceId,
+      serverName: state.serverInfo?.name,
+      version: state.serverInfo?.version,
+    };
   }
 
   /**
