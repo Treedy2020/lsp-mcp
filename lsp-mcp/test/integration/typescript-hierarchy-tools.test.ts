@@ -18,6 +18,10 @@ describe("TypeScript Hierarchy Tools", () => {
     fs.writeFileSync(
       TEST_FILE,
       [
+        "interface NodeItem {",
+        "  id: string;",
+        "}",
+        "",
         "function leaf(x: number): number {",
         "  return x + 1;",
         "}",
@@ -29,6 +33,10 @@ describe("TypeScript Hierarchy Tools", () => {
         "function callerB() {",
         "  return leaf(2);",
         "}",
+        "",
+        "const data: NodeItem = {",
+        "  id: 'x',",
+        "};",
         "",
       ].join("\n")
     );
@@ -53,7 +61,7 @@ describe("TypeScript Hierarchy Tools", () => {
   it("should return call hierarchy for function symbol", async () => {
     const result = await client.callTool("call_hierarchy", {
       file: TEST_FILE,
-      line: 1,
+      line: 5,
       column: 10,
       direction: "both",
     });
@@ -79,7 +87,7 @@ describe("TypeScript Hierarchy Tools", () => {
   it("should return document highlights for symbol", async () => {
     const result = await client.callTool("document_highlight", {
       file: TEST_FILE,
-      line: 1,
+      line: 5,
       column: 10,
     });
     expect(result.error).toBeUndefined();
@@ -90,11 +98,31 @@ describe("TypeScript Hierarchy Tools", () => {
   it("should return code lens style summary", async () => {
     const result = await client.callTool("code_lens", {
       file: TEST_FILE,
-      line: 1,
+      line: 5,
       column: 10,
     });
     expect(result.error).toBeUndefined();
     expect(Array.isArray(result.lenses)).toBe(true);
     expect(result.references_count).toBeGreaterThan(0);
+  });
+
+  it("should return nested selection ranges", async () => {
+    const result = await client.callTool("selection_range", {
+      file: TEST_FILE,
+      line: 6,
+      column: 10,
+    });
+    expect(result.error).toBeUndefined();
+    expect(Array.isArray(result.ranges)).toBe(true);
+    expect(result.count).toBeGreaterThan(0);
+  });
+
+  it("should return folding ranges", async () => {
+    const result = await client.callTool("folding_range", {
+      file: TEST_FILE,
+    });
+    expect(result.error).toBeUndefined();
+    expect(Array.isArray(result.ranges)).toBe(true);
+    expect(result.count).toBeGreaterThan(0);
   });
 });
