@@ -66,9 +66,15 @@ async function copyBackend(name: string, dir: string) {
       fs.writeFileSync(targetPkgPath, `${JSON.stringify(targetPkg, null, 2)}\n`, "utf-8");
     }
 
-    // Install production dependencies in the bundled directory
-    console.log(`Installing dependencies for ${name}...`);
-    await $`cd ${targetPath} && bun install --production`;
+    // Reuse already-installed backend dependencies to avoid a second network resolve
+    // step in dist/, which can hang in restricted environments.
+    if (fs.existsSync(path.join(sourcePath, "node_modules"))) {
+      console.log(`Copying node_modules for ${name}...`);
+      await $`cp -r ${path.join(sourcePath, "node_modules")} ${targetPath}/`;
+    } else {
+      console.log(`node_modules missing for ${name}; installing production dependencies...`);
+      await $`cd ${targetPath} && bun install --production`;
+    }
   }
 }
 
