@@ -46,6 +46,8 @@ describe("Unified Search", () => {
     expect(result.error).toBeUndefined();
     expect(Array.isArray(result.matches)).toBe(true);
     expect(result.matches.length).toBeGreaterThan(0);
+    expect(result.resolved_language).toBe("typescript");
+    expect(result.resolved_workspace).toBe(TEST_DIR);
   });
 
   it("should prefer language-specific workspace over global workspace", async () => {
@@ -118,6 +120,8 @@ describe("Unified Search", () => {
     expect(Array.isArray(second.matches)).toBe(true);
     expect(second.page.offset).toBe(1);
     expect(second.page.expires_at).toBeDefined();
+    expect(second.resolved_language).toBe("typescript");
+    expect(second.resolved_workspace).toBe(TEST_DIR);
   });
 
   it("should page via expand_result without tool-specific arguments", async () => {

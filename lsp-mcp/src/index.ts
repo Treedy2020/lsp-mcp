@@ -944,7 +944,12 @@ server.registerTool(
     };
     if (page.tool === "diagnostics") payload.diagnostics = page.data.items;
     if (page.tool === "references") payload.references = page.data.items;
-    if (page.tool === "search" || page.tool === "workspace_symbol") payload.matches = page.data.items;
+    if (page.tool === "search" || page.tool === "workspace_symbol") {
+      payload.matches = page.data.items;
+      payload.resolved_language = page.data.summary?.resolved_language ?? null;
+      payload.resolved_workspace = page.data.summary?.resolved_workspace ?? null;
+      payload.resolved_workspaces = page.data.summary?.resolved_workspaces ?? null;
+    }
     if (page.tool === "project_structure" || page.tool === "summarize_file" || page.tool === "read_file_with_hints") {
       payload.lines = page.data.items;
     }
@@ -2562,6 +2567,18 @@ function preRegisterTools(): void {
                 [itemsKey]: page.data.items,
                 count: page.data.count,
                 summary: page.data.summary,
+                resolved_language:
+                  tool.name === "search" || tool.name === "workspace_symbol"
+                    ? (page.data.summary?.resolved_language ?? null)
+                    : undefined,
+                resolved_workspace:
+                  tool.name === "search" || tool.name === "workspace_symbol"
+                    ? (page.data.summary?.resolved_workspace ?? null)
+                    : undefined,
+                resolved_workspaces:
+                  tool.name === "search" || tool.name === "workspace_symbol"
+                    ? (page.data.summary?.resolved_workspaces ?? null)
+                    : undefined,
                 page: page.data.page,
                 next: page.data.page.has_more
                   ? { tool: "expand_result", arguments: { cursor: page.data.page.next_cursor, page_size: pageSize } }
@@ -2636,6 +2653,14 @@ function preRegisterTools(): void {
                if (requestedWorkspacePath) return requestedWorkspacePath;
                return getWorkspaceForLanguage(lang) || activeWorkspacePath;
              };
+             const resolvedWorkspaces = Object.fromEntries(
+               enabledLanguages.map((lang) => [lang, resolveWorkspaceForLanguage(lang)])
+             );
+             const resolvedLanguage = enabledLanguages.length === 1 ? enabledLanguages[0] : "multi";
+             const resolvedWorkspace =
+               resolvedLanguage === "multi"
+                 ? null
+                 : resolveWorkspaceForLanguage(resolvedLanguage);
              const getSingletonLock = (lang: string): Promise<SingletonGuardResult> => {
                const existing = lockByLanguage.get(lang);
                if (existing) return existing;
@@ -2749,9 +2774,25 @@ function preRegisterTools(): void {
                  }
              }
              if (results.length === 0) {
-                 return { content: [{ type: "text", text: JSON.stringify({ matches: [], count: 0, message: "No matches found. If this is your first query, call switch_workspace(path=...) or pass path=... to search." }) }] };
+                 return {
+                   content: [{
+                     type: "text",
+                     text: JSON.stringify({
+                       matches: [],
+                       count: 0,
+                       message: "No matches found. If this is your first query, call switch_workspace(path=...) or pass path=... to search.",
+                       resolved_language: resolvedLanguage,
+                       resolved_workspace: resolvedWorkspace,
+                       resolved_workspaces: resolvedWorkspaces,
+                     }),
+                   }],
+                 };
              }
-             const cursor = makeCursor(tool.name, results, totalCount);
+             const cursor = makeCursor(tool.name, results, totalCount, {
+               resolved_language: resolvedLanguage,
+               resolved_workspace: resolvedWorkspace,
+               resolved_workspaces: resolvedWorkspaces,
+             });
              const page = readCursorPage(tool.name, cursor, pageSize);
              if (!page.ok) {
                return { content: [{ type: "text", text: JSON.stringify(page.data) }] };
@@ -2763,6 +2804,9 @@ function preRegisterTools(): void {
                  text: JSON.stringify({
                    matches: page.data.items,
                    count: totalCount,
+                   resolved_language: resolvedLanguage,
+                   resolved_workspace: resolvedWorkspace,
+                   resolved_workspaces: resolvedWorkspaces,
                    page: page.data.page,
                    next: page.data.page.has_more
                      ? { tool: "expand_result", arguments: { cursor: page.data.page.next_cursor, page_size: pageSize } }
@@ -3270,7 +3314,10 @@ function preRegisterTools(): void {
               ? parsed
               : extractSearchLikeItems(parsed);
             const count = extractSearchLikeCount(parsed, items);
-            const cursor = makeCursor(tool.name, items, count);
+            const cursor = makeCursor(tool.name, items, count, {
+              resolved_language: language,
+              resolved_workspace: resolvedWorkspace,
+            });
             const page = readCursorPage(tool.name, cursor, pageSize);
             if (!page.ok) {
               return { content: [{ type: "text", text: JSON.stringify(page.data) }] };
@@ -3281,6 +3328,8 @@ function preRegisterTools(): void {
                 text: JSON.stringify({
                   matches: page.data.items,
                   count,
+                  resolved_language: language,
+                  resolved_workspace: resolvedWorkspace,
                   page: page.data.page,
                   next: page.data.page.has_more
                     ? { tool: "expand_result", arguments: { cursor: page.data.page.next_cursor, page_size: pageSize } }
