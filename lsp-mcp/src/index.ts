@@ -903,6 +903,7 @@ function findWorkspaceIdentifierHits(identifier: string, workspacePath?: string)
   const escaped = identifier.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const pattern = `\\b${escaped}\\b`;
   const args = [
+    "--no-ignore-vcs",
     "--line-number",
     "--column",
     "--no-heading",
@@ -912,6 +913,8 @@ function findWorkspaceIdentifierHits(identifier: string, workspacePath?: string)
     "*.vue",
     "-g",
     "*.ts",
+    "-g",
+    "*.d.ts",
     "-g",
     "*.tsx",
     "-g",
@@ -943,30 +946,51 @@ function findWorkspaceIdentifierHits(identifier: string, workspacePath?: string)
 }
 
 function findDeclarationInFile(content: string, identifier: string): { line: number; column: number } | null {
-  const decl = new RegExp(`\\b(const|let|var|function|class|interface|type)\\s+${identifier}\\b`);
   const lines = content.split("\n");
+  const declarationPatterns = [
+    new RegExp(`\\b(?:export\\s+)?(?:const|let|var|function|class|interface|type|enum)\\s+${identifier}\\b`),
+    new RegExp(`\\b(?:const|let|var)\\s*\\{[^}]*\\b${identifier}\\b[^}]*\\}\\s*=`),
+    new RegExp(`\\bimport\\s*\\{[^}]*\\b${identifier}\\b[^}]*\\}\\s*from\\b`),
+  ];
   for (let i = 0; i < lines.length; i++) {
-    const m = decl.exec(lines[i]);
-    if (!m) continue;
-    return { line: i + 1, column: m.index + 1 };
+    for (const declarationPattern of declarationPatterns) {
+      const m = declarationPattern.exec(lines[i]);
+      if (!m) continue;
+      return { line: i + 1, column: m.index + 1 };
+    }
   }
   return null;
 }
 
-function bundledVueSemanticDepsMissing(): boolean {
-  if (VUE_FORCE_MISSING_SEMANTIC_DEPS) return true;
+function workspaceVueSemanticDepsAvailable(workspacePath?: string | null): boolean {
+  if (!workspacePath) return false;
+  const resolved = path.isAbsolute(workspacePath) ? workspacePath : path.resolve(workspacePath);
+  const hasTypeScript = fs.existsSync(path.join(resolved, "node_modules", "typescript", "lib", "tsserver.js"));
+  const hasLanguageServer = fs.existsSync(path.join(resolved, "node_modules", "@vue", "language-server"));
+  return hasTypeScript && hasLanguageServer;
+}
+
+function bundledVueSemanticDepsAvailable(): boolean {
+  if (VUE_FORCE_MISSING_SEMANTIC_DEPS) return false;
   if (vueBundledDepsMissingCache !== null) return vueBundledDepsMissingCache;
   try {
     const bundledPkgPath = require.resolve("../dist/bundled/vue/package.json");
     const bundledRoot = path.dirname(bundledPkgPath);
     const hasTypeScript = fs.existsSync(path.join(bundledRoot, "node_modules", "typescript", "lib", "tsserver.js"));
     const hasLanguageServer = fs.existsSync(path.join(bundledRoot, "node_modules", "@vue", "language-server"));
-    vueBundledDepsMissingCache = !(hasTypeScript && hasLanguageServer);
+    vueBundledDepsMissingCache = hasTypeScript && hasLanguageServer;
     return vueBundledDepsMissingCache;
   } catch {
     vueBundledDepsMissingCache = false;
     return false;
   }
+}
+
+function vueSemanticDepsMissing(workspacePath?: string | null): boolean {
+  if (VUE_FORCE_MISSING_SEMANTIC_DEPS) return true;
+  if (bundledVueSemanticDepsAvailable()) return false;
+  if (workspaceVueSemanticDepsAvailable(workspacePath)) return false;
+  return true;
 }
 
 function buildVueMissingDepsErrorResponse(
@@ -1420,12 +1444,29 @@ function buildVueFallbackResponse(
   if (toolName === "hover") {
     const ident = pickVueFallbackIdentifier(vueContent, args);
     if (!ident) return null;
+    const escaped = ident.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    let definitionNote = "";
+    const localDecl = findDeclarationInFile(vueContent, escaped);
+    if (localDecl) {
+      definitionNote = `Fallback definition candidate: ${absVuePath}:${localDecl.line}:${localDecl.column}.`;
+    } else {
+      const workspaceHits = findWorkspaceIdentifierHits(ident, activeWorkspacePath);
+      const declarationFileFirst = workspaceHits.sort((a, b) => Number(!a.file.endsWith(".d.ts")) - Number(!b.file.endsWith(".d.ts")));
+      for (const hit of declarationFileFirst) {
+        if (!fs.existsSync(hit.file)) continue;
+        const fileContent = fs.readFileSync(hit.file, "utf-8");
+        const decl = findDeclarationInFile(fileContent, escaped);
+        if (!decl) continue;
+        definitionNote = `Fallback definition candidate: ${hit.file}:${decl.line}:${decl.column}.`;
+        break;
+      }
+    }
     return {
       content: [{
         type: "text",
         text: JSON.stringify({
           contents: `symbol ${ident}`,
-          documentation: "Fallback hover for Vue file (semantic server returned no info).",
+          documentation: definitionNote || "Fallback hover for Vue file (semantic server returned no info).",
           fallback: "vue_identifier",
         }),
       }],
@@ -1453,7 +1494,8 @@ function buildVueFallbackResponse(
     }
 
     const workspaceHits = findWorkspaceIdentifierHits(ident, activeWorkspacePath);
-    for (const hit of workspaceHits) {
+    const declarationFileFirst = workspaceHits.sort((a, b) => Number(!a.file.endsWith(".d.ts")) - Number(!b.file.endsWith(".d.ts")));
+    for (const hit of declarationFileFirst) {
       if (!fs.existsSync(hit.file)) continue;
       const fileContent = fs.readFileSync(hit.file, "utf-8");
       const decl = findDeclarationInFile(fileContent, escaped);
@@ -2133,7 +2175,7 @@ function preRegisterTools(): void {
         const proxyHost = singletonLock.proxyHost;
         const proxyPort = singletonLock.proxyPort;
         const hasProxy = !!proxyHost && !!proxyPort;
-        const missingVueToolDeps = !hasProxy && isVueFallbackCapableTool && bundledVueSemanticDepsMissing();
+        const missingVueToolDeps = !hasProxy && isVueFallbackCapableTool && vueSemanticDepsMissing(lockWorkspace);
         const callBackendTool = (toolName: string, backendArgs: Record<string, unknown>) => {
           if (proxyHost && proxyPort) {
             return callRemoteBackendTool(proxyHost, proxyPort, language, toolName, backendArgs, activeWorkspacePath || lockWorkspace);
@@ -2543,9 +2585,13 @@ function preRegisterTools(): void {
         if (language === "vue" && (tool.name === "symbols" || tool.name === "hover" || tool.name === "definition" || tool.name === "references")) {
           try {
             const parsed = JSON.parse(backendResult.content[0].text);
+            const hoverText = typeof parsed?.contents === "string" ? parsed.contents.trim() : "";
+            const referenceItems = extractReferencesItems(parsed);
             const shouldFallback =
               (tool.name === "symbols" && (parsed?.error || !Array.isArray(parsed?.symbols) || parsed.symbols.length === 0)) ||
-              ((tool.name === "hover" || tool.name === "definition" || tool.name === "references") && !!parsed?.error);
+              (tool.name === "hover" && (!!parsed?.error || hoverText === "any" || /^const\\s+\\w+:\\s*any$/i.test(hoverText))) ||
+              (tool.name === "definition" && !!parsed?.error) ||
+              (tool.name === "references" && (!!parsed?.error || referenceItems.length === 0));
             if (shouldFallback && typeof filePath === "string") {
               const fallback = buildVueFallbackResponse(tool.name, filePath, backendArgs, activeWorkspacePath);
               if (fallback) {
