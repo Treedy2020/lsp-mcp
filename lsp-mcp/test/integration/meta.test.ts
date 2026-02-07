@@ -44,6 +44,7 @@ describe("Meta Tools", () => {
     const result = await client.callTool("doctor", {});
     expect(result.checks).toBeDefined();
     expect(result.enabledLanguages).toBeDefined();
+    expect(result.workspaceDependencyChecks).toBeDefined();
     expect(Array.isArray(result.recommendations)).toBe(true);
   });
 

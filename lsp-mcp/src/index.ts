@@ -484,6 +484,35 @@ server.registerTool(
       bun: checkCommand("bun"),
     };
 
+    const workspaceDependencyChecks: Record<string, unknown> = {};
+    if (config.languages.vue?.enabled) {
+      const vueRoots = detectVueProjectRoots(activeWorkspacePath);
+      const vueProjects = vueRoots.map(checkVueProjectDeps);
+      workspaceDependencyChecks.vue = {
+        strict_mode: VUE_STRICT_SEMANTIC,
+        workspace: activeWorkspacePath,
+        project_count: vueProjects.length,
+        projects: vueProjects,
+        note: !activeWorkspacePath
+          ? "Call switch_workspace(path=...) to run Vue project dependency checks."
+          : undefined,
+      };
+    }
+
+    const uvCacheDir = process.env.UV_CACHE_DIR || path.join("/tmp", "lsp-mcp-uv-cache");
+    let uvCacheWritable = false;
+    try {
+      fs.mkdirSync(uvCacheDir, { recursive: true });
+      fs.accessSync(uvCacheDir, fs.constants.W_OK);
+      uvCacheWritable = true;
+    } catch {
+      uvCacheWritable = false;
+    }
+    workspaceDependencyChecks.python = {
+      uv_cache_dir: uvCacheDir,
+      uv_cache_writable: uvCacheWritable,
+    };
+
     const enabledLanguages = Object.keys(config.languages).filter((lang) => config.languages[lang]?.enabled);
     const backendCommands = Object.fromEntries(
       enabledLanguages.map((lang) => {
@@ -510,12 +539,32 @@ server.registerTool(
     if (!checks.npx.available) recommendations.push("Ensure npm/npx is available in PATH.");
     if (!checks.uv.available && config.languages.python?.enabled) recommendations.push("Install uv for Python backend support.");
     if (!checks.bun.available) recommendations.push("Install Bun if you run this server from source.");
+    if (config.languages.vue?.enabled && activeWorkspacePath) {
+      const vueChecks = workspaceDependencyChecks.vue as { projects?: Array<{ ok: boolean; install_example: string }> } | undefined;
+      const missing = (vueChecks?.projects || []).filter((p) => !p.ok);
+      if (missing.length > 0) {
+        recommendations.push("Vue strict semantic mode is enabled and some Vue projects are missing runtime dependencies.");
+        for (const project of missing) {
+          recommendations.push(`Install Vue semantic deps: ${project.install_example}`);
+        }
+      }
+    }
+    if (config.languages.python?.enabled && !uvCacheWritable) {
+      recommendations.push(`UV cache directory is not writable: ${uvCacheDir}. Set UV_CACHE_DIR to a writable path.`);
+    }
+    if (probe_backends && probeResults.python?.ok === false) {
+      const pythonProbeError = String(probeResults.python?.error || "");
+      if (pythonProbeError.includes("Connection closed") || pythonProbeError.includes("MCP error -32000")) {
+        recommendations.push("Python backend failed before handshake. Run `uv run --directory dist/bundled/python python-lsp-mcp --help` to preinstall runtime dependencies.");
+      }
+    }
 
     const result = {
       ok: recommendations.length === 0,
       checks,
       activeWorkspacePath,
       enabledLanguages,
+      workspaceDependencyChecks,
       backendCommands,
       probe_backends: !!probe_backends,
       probeResults: probe_backends ? probeResults : undefined,
@@ -525,6 +574,9 @@ server.registerTool(
     const items: Array<{ kind: string; key: string; value: unknown }> = [];
     for (const [name, check] of Object.entries(checks)) {
       items.push({ kind: "runtime_check", key: name, value: check });
+    }
+    for (const [name, depCheck] of Object.entries(workspaceDependencyChecks)) {
+      items.push({ kind: "workspace_dependency", key: name, value: depCheck });
     }
     for (const [lang, command] of Object.entries(backendCommands)) {
       items.push({ kind: "backend_command", key: lang, value: command });
@@ -982,6 +1034,83 @@ function workspaceVueSemanticDepsAvailable(workspacePath?: string | null): boole
   }
 
   return false;
+}
+
+function hasVueFileInDir(dirPath: string): boolean {
+  if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) return false;
+  const stack: Array<{ dir: string; depth: number }> = [{ dir: dirPath, depth: 0 }];
+  while (stack.length > 0) {
+    const { dir, depth } = stack.pop()!;
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith(".vue")) return true;
+      if (!entry.isDirectory()) continue;
+      if (entry.name === "node_modules" || entry.name === ".git" || entry.name === "dist") continue;
+      if (depth < 2) {
+        stack.push({ dir: path.join(dir, entry.name), depth: depth + 1 });
+      }
+    }
+  }
+  return false;
+}
+
+function detectVueProjectRoots(workspacePath?: string | null): string[] {
+  if (!workspacePath) return [];
+  let root = path.isAbsolute(workspacePath) ? workspacePath : path.resolve(workspacePath);
+  if (!fs.existsSync(root)) return [];
+  if (!fs.statSync(root).isDirectory()) {
+    root = path.dirname(root);
+  }
+
+  const candidates = [root];
+  try {
+    const entries = fs.readdirSync(root, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (entry.name === "node_modules" || entry.name === ".git" || entry.name === "dist" || entry.name.startsWith(".")) continue;
+      candidates.push(path.join(root, entry.name));
+    }
+  } catch {
+    // ignore and keep root-only candidate
+  }
+
+  const results: string[] = [];
+  for (const dir of candidates) {
+    const hasPkg = fs.existsSync(path.join(dir, "package.json"));
+    const hasVueConfig =
+      fs.existsSync(path.join(dir, "vite.config.ts")) ||
+      fs.existsSync(path.join(dir, "vite.config.js")) ||
+      fs.existsSync(path.join(dir, "vue.config.js")) ||
+      fs.existsSync(path.join(dir, "nuxt.config.ts"));
+    const hasVueSource = hasVueFileInDir(path.join(dir, "src"));
+    if (hasPkg && (hasVueConfig || hasVueSource)) {
+      results.push(dir);
+    }
+  }
+  return Array.from(new Set(results));
+}
+
+function checkVueProjectDeps(projectRoot: string): {
+  root: string;
+  has_typescript: boolean;
+  has_vue_language_server: boolean;
+  ok: boolean;
+  install_example: string;
+} {
+  const hasTypeScript = fs.existsSync(path.join(projectRoot, "node_modules", "typescript", "lib", "tsserver.js"));
+  const hasVueLs = fs.existsSync(path.join(projectRoot, "node_modules", "@vue", "language-server"));
+  return {
+    root: projectRoot,
+    has_typescript: hasTypeScript,
+    has_vue_language_server: hasVueLs,
+    ok: hasTypeScript && hasVueLs,
+    install_example: `cd ${projectRoot} && pnpm add -D typescript @vue/language-server`,
+  };
 }
 
 function bundledVueSemanticDepsAvailable(): boolean {
