@@ -35,6 +35,7 @@ import {
   startBackendSchema,
   updateBackend as updateBackendTool,
   updateBackendSchema,
+  getBackendPackages,
 } from "./tools/meta.js";
 import { registerPrompts } from "./prompts.js";
 
@@ -786,6 +787,49 @@ server.registerTool(
       bun: checkCommand("bun"),
     };
 
+    const backendPackages = getBackendPackages(config).filter((pkg) => config.languages[pkg.language]?.enabled);
+    const versionByLanguage = new Map(backendManager.getVersions().map((version) => [version.language, version]));
+    const backendPackageDrift = Object.fromEntries(
+      backendPackages.map((pkg) => {
+        const versionInfo = versionByLanguage.get(pkg.language);
+        const backendStatus = versionInfo?.status ?? "not_started";
+        const command = versionInfo?.command ?? "not configured";
+        const installedVersion = versionInfo?.installed ?? null;
+        const bundledRuntime = command.includes("/dist/bundled/");
+        const usingLatestPolicy = pkg.registry === "npm"
+          ? command.includes("@latest")
+          : command.includes("--upgrade");
+
+        let driftStatus: "unknown_not_started" | "bundled_static" | "policy_aligned" | "policy_drift" = "unknown_not_started";
+        if (backendStatus === "ready" || backendStatus === "error") {
+          if (bundledRuntime) driftStatus = "bundled_static";
+          else if (usingLatestPolicy) driftStatus = "policy_aligned";
+          else driftStatus = "policy_drift";
+        }
+
+        const nextStep = driftStatus === "policy_aligned"
+          ? "No action needed."
+          : driftStatus === "bundled_static"
+            ? "Rebuild bundled backends to refresh pinned runtime: bun run build:bundled"
+            : driftStatus === "policy_drift"
+              ? `Upgrade via: ${pkg.update_command}`
+              : `Start backend '${pkg.language}' and run doctor again to verify installed version.`;
+
+        return [pkg.language, {
+          language: pkg.language,
+          backend_status: backendStatus,
+          installed_version: installedVersion,
+          package_ref: pkg.package_ref,
+          resolver: pkg.resolver,
+          configured_command: command,
+          latest_policy: pkg.default_channel,
+          drift_status: driftStatus,
+          update_command: pkg.update_command,
+          next_step: nextStep,
+        }];
+      })
+    );
+
     const workspaceDependencyChecks: Record<string, unknown> = {};
     if (config.languages.vue?.enabled) {
       const vueRoots = detectVueProjectRoots(activeWorkspacePath);
@@ -979,12 +1023,20 @@ server.registerTool(
         recommendations.push("Python backend failed before handshake. Run `uv run --directory dist/bundled/python python-lsp-mcp --help` to preinstall runtime dependencies.");
       }
     }
+    for (const [lang, drift] of Object.entries(backendPackageDrift as Record<string, any>)) {
+      if (drift.drift_status === "policy_drift") {
+        recommendations.push(`${lang} backend is not using latest update policy. ${drift.next_step}`);
+      } else if (drift.drift_status === "bundled_static") {
+        recommendations.push(`${lang} backend runs from bundled runtime and may drift from latest. ${drift.next_step}`);
+      }
+    }
 
     const result = {
       ok: recommendations.length === 0,
       checks,
       activeWorkspacePath,
       enabledLanguages,
+      backendPackageDrift,
       workspaceDependencyChecks,
       languageCommandChains,
       backendCommands,
@@ -1005,6 +1057,9 @@ server.registerTool(
     }
     for (const [lang, command] of Object.entries(backendCommands)) {
       items.push({ kind: "backend_command", key: lang, value: command });
+    }
+    for (const [lang, drift] of Object.entries(backendPackageDrift as Record<string, unknown>)) {
+      items.push({ kind: "backend_package_drift", key: lang, value: drift });
     }
     for (const [lang, probe] of Object.entries(probeResults)) {
       items.push({ kind: "backend_probe", key: lang, value: probe });

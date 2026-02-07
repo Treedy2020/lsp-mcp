@@ -29,7 +29,7 @@ try {
  */
 export const statusSchema = {};
 
-type BackendPackageInfo = {
+export type BackendPackageInfo = {
   language: "python" | "typescript" | "vue";
   provider: string;
   package: string;
@@ -42,7 +42,7 @@ type BackendPackageInfo = {
   auto_update_enabled: boolean;
 };
 
-function getBackendPackages(config: Config): BackendPackageInfo[] {
+export function getBackendPackages(config: Config): BackendPackageInfo[] {
   const pythonProvider = config.python?.provider || "python-lsp-mcp";
   const pythonPackage: Omit<BackendPackageInfo, "language" | "provider" | "default_channel" | "auto_update_enabled"> =
     pythonProvider === "pyright-mcp"

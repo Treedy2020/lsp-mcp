@@ -96,6 +96,11 @@ describe("Meta Tools", () => {
     const result = await client.callTool("doctor", {});
     expect(result.checks).toBeDefined();
     expect(result.enabledLanguages).toBeDefined();
+    expect(result.backendPackageDrift).toBeDefined();
+    expect(result.backendPackageDrift.typescript).toBeDefined();
+    expect(result.backendPackageDrift.typescript.package_ref).toBe("@treedy/typescript-lsp-mcp@latest");
+    expect(result.backendPackageDrift.typescript.drift_status).toBeDefined();
+    expect(result.backendPackageDrift.typescript.next_step).toBeDefined();
     expect(result.workspaceDependencyChecks).toBeDefined();
     expect(result.workspaceDependencyChecks.language_workspace_discovery).toBeDefined();
     expect(result.workspaceDependencyChecks.language_command_chains).toBeDefined();
