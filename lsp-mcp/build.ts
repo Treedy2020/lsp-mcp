@@ -14,6 +14,9 @@ const PROJECT_ROOT = path.resolve(import.meta.dir, "..");
 const BACKENDS_DIR = path.join(PROJECT_ROOT, "backends");
 const DIST_DIR = path.resolve(import.meta.dir, "dist");
 const BUNDLED_DIR = path.join(DIST_DIR, "bundled");
+const BUNDLE_BACKENDS =
+  process.env.LSP_MCP_BUILD_BUNDLED_BACKENDS === "true" ||
+  Bun.argv.includes("--with-bundled-backends");
 
 async function buildBackend(name: string, dir: string) {
   console.log(`Building ${name} backend...`);
@@ -102,25 +105,31 @@ async function build() {
     process.exit(1);
   }
 
-  // Create bundled directory
-  await $`mkdir -p ${BUNDLED_DIR}`;
+  if (BUNDLE_BACKENDS) {
+    // Create bundled directory
+    await $`mkdir -p ${BUNDLED_DIR}`;
 
-  // Build and copy backends
-  // 1. TypeScript Backend
-  await buildBackend("typescript", "typescript/typescript-lsp-mcp");
-  await copyBackend("typescript", "typescript/typescript-lsp-mcp");
+    // Build and copy backends
+    // 1. TypeScript Backend
+    await buildBackend("typescript", "typescript/typescript-lsp-mcp");
+    await copyBackend("typescript", "typescript/typescript-lsp-mcp");
 
-  // 2. Pyright Backend (TS implementation)
-  await buildBackend("pyright", "python/pyright-mcp");
-  await copyBackend("pyright", "python/pyright-mcp");
+    // 2. Pyright Backend (TS implementation)
+    await buildBackend("pyright", "python/pyright-mcp");
+    await copyBackend("pyright", "python/pyright-mcp");
 
-  // 3. Python Backend (Rope/Python implementation)
-  // No build step needed for Python, just copy
-  await copyBackend("python", "python/python-lsp-mcp");
+    // 3. Python Backend (Rope/Python implementation)
+    // No build step needed for Python, just copy
+    await copyBackend("python", "python/python-lsp-mcp");
 
-  // 4. Vue Backend
-  await buildBackend("vue", "vue/vue-lsp-mcp");
-  await copyBackend("vue", "vue/vue-lsp-mcp");
+    // 4. Vue Backend
+    await buildBackend("vue", "vue/vue-lsp-mcp");
+    await copyBackend("vue", "vue/vue-lsp-mcp");
+  } else {
+    console.log("Skipping bundled backends (lean build mode).");
+    console.log("Backends will be resolved via npx/uvx at runtime.");
+    console.log("Use `bun run build:bundled` for offline/local bundled backend runs.");
+  }
 
 
   // Ensure shebang is at the top of the output file
@@ -134,7 +143,11 @@ async function build() {
   // Make executable
   await $`chmod +x ${indexPath}`;
 
-  console.log("Build complete! Backends bundled in ./dist/bundled/");
+  if (BUNDLE_BACKENDS) {
+    console.log("Build complete! Backends bundled in ./dist/bundled/");
+  } else {
+    console.log("Build complete! Lean package created in ./dist (no bundled backends).");
+  }
 }
 
 build().catch((error) => {

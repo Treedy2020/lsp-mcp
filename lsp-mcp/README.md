@@ -4,6 +4,9 @@ One MCP server for Python, TypeScript/JavaScript, and Vue code intelligence.
 
 It pre-registers unified LSP tools (`hover`, `definition`, `diagnostics`, etc.), auto-detects language from file path, and auto-starts backends on first use.
 
+By default, published builds are lean: they do not include bundled backend runtime payloads.
+Backends are resolved on-demand via `npx` / `uvx`.
+
 ## 60-Second Setup
 
 1) Add to your MCP client config:
@@ -118,6 +121,17 @@ When `LSP_MCP_AUTO_UPDATE=true`:
 - `typescript-lsp-mcp` via `npx --yes @treedy/typescript-lsp-mcp@latest`
 - `vue-lsp-mcp` via `npx --yes @treedy/vue-lsp-mcp@latest`
 
+### Runtime dependency expectations
+
+- Lean mode (default): backend packages are fetched when first used.
+- Required host tools:
+  - TypeScript/Vue/Pyright backends: `node` + `npx`
+  - Python backend: `uv` (or `uvx`)
+- Vue semantic features additionally require project-local deps in the Vue workspace:
+  - `typescript`
+  - `@vue/language-server`
+- Use `doctor` to get structured dependency checks and install commands.
+
 ## Better Out-of-Box Experience (Recommended)
 
 - Use absolute file paths for the first calls to avoid inference edge cases.
@@ -132,13 +146,16 @@ When `LSP_MCP_AUTO_UPDATE=true`:
 # Install deps
 bun install
 
-# Build local dist/ + bundled backends
+# Build local dist/ (lean default, no bundled backends)
 bun run build
+
+# Build local dist/ + bundled backends (for offline/dev integration runs)
+bun run build:bundled
 
 # Run in watch mode
 bun run dev
 
-# Full integration suite (builds first, uses local dist/bundled)
+# Full integration suite (builds bundled mode first)
 bun run test
 
 # Benchmark-focused suite (zod + fastapi + vitesse)

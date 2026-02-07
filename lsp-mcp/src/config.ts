@@ -389,7 +389,7 @@ export function getBackendCommand(
       }
       if (requireBundledBackends) {
         throw new Error(
-          "Bundled pyright backend not found. Run `bun run build` in lsp-mcp to produce dist/bundled/pyright."
+          "Bundled pyright backend not found. Run `bun run build:bundled` in lsp-mcp to produce dist/bundled/pyright."
         );
       }
 
@@ -418,7 +418,7 @@ export function getBackendCommand(
       }
       if (requireBundledBackends) {
         throw new Error(
-          "Bundled python backend not found. Run `bun run build` in lsp-mcp to produce dist/bundled/python."
+          "Bundled python backend not found. Run `bun run build:bundled` in lsp-mcp to produce dist/bundled/python."
         );
       }
 
@@ -444,7 +444,7 @@ export function getBackendCommand(
     }
     if (requireBundledBackends) {
       throw new Error(
-        "Bundled typescript backend not found. Run `bun run build` in lsp-mcp to produce dist/bundled/typescript."
+        "Bundled typescript backend not found. Run `bun run build:bundled` in lsp-mcp to produce dist/bundled/typescript."
       );
     }
 
@@ -468,7 +468,7 @@ export function getBackendCommand(
     }
     if (requireBundledBackends) {
       throw new Error(
-        "Bundled vue backend not found. Run `bun run build` in lsp-mcp to produce dist/bundled/vue."
+        "Bundled vue backend not found. Run `bun run build:bundled` in lsp-mcp to produce dist/bundled/vue."
       );
     }
 
