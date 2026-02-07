@@ -117,7 +117,7 @@ bun test test/integration/meta.test.ts test/integration/vue-strict-semantic.test
 - [x] `semantic_tokens` for richer structure-aware reading (TypeScript implemented; Python/Vue pending).
 - [x] `linked_editing_range` for paired structural edits (TypeScript implemented; Python/Vue pending).
 - [ ] `moniker` for cross-package symbol identity.
-- [ ] `inlay_hint/resolve` optimization path for large files.
+- [~] `inlay_hint/resolve` optimization path for large files (TypeScript windowed hint span implemented; resolve/pending language parity remains).
 
 ### Notes
 

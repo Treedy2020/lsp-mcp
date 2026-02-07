@@ -3624,8 +3624,6 @@ function preRegisterTools(): void {
 
             // 2. Get hints from backend
             const hintsArgs = { ...(args as Record<string, unknown>) };
-            delete hintsArgs.start_line;
-            delete hintsArgs.max_lines;
             delete hintsArgs.page_size;
             delete hintsArgs.cursor;
             let hints: any[] = [];

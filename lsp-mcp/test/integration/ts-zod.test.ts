@@ -58,6 +58,19 @@ describe("TypeScript Integration (Zod)", () => {
       expect(typeof result.backend_instance_id).toBe("string");
   }, 60000);
 
+  it("should support windowed inlay hint extraction", async () => {
+    const result = await client.callTool("read_file_with_hints", {
+      file: "packages/zod/src/v4/core/util.ts",
+      start_line: 200,
+      max_lines: 25,
+    });
+
+    const content = typeof result.result === "string" ? result.result : "";
+    expect(content).toContain("File preview for");
+    expect(content).toContain("lines 200-");
+    expect(result.resolved_workspace).toBe(WORKSPACE_ROOT);
+  }, 60000);
+
   it("should list symbols with query", async () => {
     const result = await client.callTool("symbols", {
       file: "packages/zod/src/v4/core/util.ts",
