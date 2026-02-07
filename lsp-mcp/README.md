@@ -85,6 +85,31 @@ Paged responses include:
 - `discover_language_workspaces` input: `root` (optional), `max_depth` (optional, default `2`), `apply` (optional, default `false`)
 - In mixed-language monorepos, semantic tools require language workspace mapping (set via `switch_workspace_for_language` or `discover_language_workspaces(..., apply=true)`).
 - `doctor` now includes `workspaceDependencyChecks.language_workspace_discovery` with suggested per-language workspace commands.
+- `doctor` includes `backendPackageDrift` to show installed backend version vs latest policy and upgrade next steps.
+
+Example fields exposed for client/LLM orchestration:
+
+```json
+{
+  "backend_packages": [
+    {
+      "language": "typescript",
+      "package_ref": "@treedy/typescript-lsp-mcp@latest",
+      "resolver": "npx",
+      "install_command": "npx --yes @treedy/typescript-lsp-mcp@latest",
+      "update_command": "npx --yes @treedy/typescript-lsp-mcp@latest",
+      "default_channel": "latest"
+    }
+  ],
+  "backendPackageDrift": {
+    "typescript": {
+      "installed_version": "0.2.0",
+      "drift_status": "policy_aligned",
+      "next_step": "No action needed."
+    }
+  }
+}
+```
 
 ## Prompts (Skills)
 
