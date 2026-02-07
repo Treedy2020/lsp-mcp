@@ -144,6 +144,9 @@ bun run test
 # Benchmark-focused suite (zod + fastapi + vitesse)
 bun run test:benchmark
 
+# Reporting template for benchmark runs
+# docs/techbet-report-template.md
+
 # Legacy smoke script (kept for low-level checks)
 bun run test:legacy
 
