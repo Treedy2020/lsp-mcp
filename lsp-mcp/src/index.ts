@@ -288,16 +288,62 @@ function discoverWorkspaceCandidates(rootPath: string, maxDepth = 2): WorkspaceC
   return candidates;
 }
 
-function pickLanguageWorkspace(language: Language, candidates: WorkspaceCandidate[]): WorkspaceCandidate | null {
+function pickLanguageWorkspace(
+  language: Language,
+  candidates: WorkspaceCandidate[],
+  discoveryRoot?: string
+): WorkspaceCandidate | null {
+  const pathPenalty = (dir: string): number => {
+    const lowered = dir.toLowerCase();
+    const segments = lowered.split(path.sep).filter(Boolean);
+    if (segments.some((seg) => seg === "cypress" || seg === "e2e" || seg === "__tests__")) {
+      return -500;
+    }
+    if (segments.some((seg) => seg === "test" || seg === "tests" || seg === "spec" || seg === "fixtures")) {
+      return -180;
+    }
+    return 0;
+  };
+  const pathDepthScore = (dir: string): number => {
+    const depth = dir.split(path.sep).filter(Boolean).length;
+    return Math.max(0, 30 - depth);
+  };
+  const relativeDepthScore = (dir: string): number => {
+    if (!discoveryRoot) return 0;
+    const rel = path.relative(discoveryRoot, dir);
+    if (!rel || rel === ".") return 80;
+    if (rel.startsWith("..")) return 0;
+    const segments = rel.split(path.sep).filter(Boolean);
+    return Math.max(0, 70 - segments.length * 25);
+  };
+  const typescriptPreferenceScore = (candidate: WorkspaceCandidate): number => {
+    let score = candidate.typescriptScore;
+    if (candidate.hasPackageJson) score += 60;
+    if (candidate.hasTsconfig) score += 25;
+    if (candidate.hasViteConfig || candidate.hasVueDependency) score -= 30;
+    score += relativeDepthScore(candidate.dir);
+    score += pathDepthScore(candidate.dir);
+    score += pathPenalty(candidate.dir);
+    return score;
+  };
   const sorted = [...candidates].sort((a, b) => {
     if (language === "python") return b.pythonScore - a.pythonScore;
     if (language === "vue") return b.vueScore - a.vueScore;
-    return b.typescriptScore - a.typescriptScore;
+    return typescriptPreferenceScore(b) - typescriptPreferenceScore(a);
   });
 
   if (language === "typescript") {
+    if (discoveryRoot) {
+      const directChildren = sorted.filter((c) =>
+        c.typescriptScore > 0 &&
+        !c.hasVueDependency &&
+        c.hasPackageJson &&
+        path.dirname(c.dir) === discoveryRoot
+      );
+      if (directChildren.length > 0) return directChildren[0];
+    }
     // Prefer TS-only project over Vue app when both are present.
-    const tsOnly = sorted.find((c) => c.typescriptScore > 0 && c.vueScore === 0);
+    const tsOnly = sorted.find((c) => c.typescriptScore > 0 && !c.hasVueDependency);
     if (tsOnly) return tsOnly;
   }
 
@@ -773,9 +819,9 @@ server.registerTool(
     if (discoveryRoot && fileExistsSafe(discoveryRoot) && fs.statSync(discoveryRoot).isDirectory()) {
       const candidates = discoverWorkspaceCandidates(discoveryRoot, 2);
       const picked: Record<Language, WorkspaceCandidate | null> = {
-        python: pickLanguageWorkspace("python", candidates),
-        typescript: pickLanguageWorkspace("typescript", candidates),
-        vue: pickLanguageWorkspace("vue", candidates),
+        python: pickLanguageWorkspace("python", candidates, discoveryRoot),
+        typescript: pickLanguageWorkspace("typescript", candidates, discoveryRoot),
+        vue: pickLanguageWorkspace("vue", candidates, discoveryRoot),
       };
       const suggestions: Record<Language, string | null> = {
         python: picked.python?.dir || null,
@@ -2436,9 +2482,9 @@ server.registerTool(
     const candidates = discoverWorkspaceCandidates(scanRoot, depth);
 
     const picked: Record<Language, WorkspaceCandidate | null> = {
-      python: pickLanguageWorkspace("python", candidates),
-      typescript: pickLanguageWorkspace("typescript", candidates),
-      vue: pickLanguageWorkspace("vue", candidates),
+      python: pickLanguageWorkspace("python", candidates, scanRoot),
+      typescript: pickLanguageWorkspace("typescript", candidates, scanRoot),
+      vue: pickLanguageWorkspace("vue", candidates, scanRoot),
     };
     const suggestions: Record<Language, string | null> = {
       python: picked.python?.dir || null,

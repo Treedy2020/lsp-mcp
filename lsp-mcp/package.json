@@ -17,7 +17,7 @@
     "dev": "bun --watch src/index.ts",
     "test": "bun run test:integration",
     "test:integration": "bun run build && bun test test/integration",
-    "test:benchmark": "bun run build && bun test test/integration/ts-zod.test.ts test/integration/python-fastapi.test.ts test/integration/vue-vitesse-deep.test.ts test/integration/vue-vitesse-language-workspace.test.ts",
+    "test:benchmark": "bun run build && LSP_MCP_SINGLETON_BACKEND=false bun test test/integration/ts-zod.test.ts test/integration/python-fastapi.test.ts test/integration/vue-vitesse-deep.test.ts test/integration/vue-vitesse-language-workspace.test.ts test/integration/mixed-root-benchmark-matrix.test.ts",
     "test:legacy": "bun test/test-integration.ts",
     "inspector": "bunx @modelcontextprotocol/inspector bun dist/index.js"
   },
