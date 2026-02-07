@@ -752,6 +752,43 @@ server.registerTool(
       uv_cache_writable: uvCacheWritable,
     };
 
+    const discoveryRoot = activeWorkspacePath;
+    if (discoveryRoot && fileExistsSafe(discoveryRoot) && fs.statSync(discoveryRoot).isDirectory()) {
+      const candidates = discoverWorkspaceCandidates(discoveryRoot, 2);
+      const picked: Record<Language, WorkspaceCandidate | null> = {
+        python: pickLanguageWorkspace("python", candidates),
+        typescript: pickLanguageWorkspace("typescript", candidates),
+        vue: pickLanguageWorkspace("vue", candidates),
+      };
+      const suggestions: Record<Language, string | null> = {
+        python: picked.python?.dir || null,
+        typescript: picked.typescript?.dir || null,
+        vue: picked.vue?.dir || null,
+      };
+      const commands = (Object.keys(suggestions) as Language[])
+        .filter((lang) => !!suggestions[lang])
+        .map((lang) => `switch_workspace_for_language(language='${lang}', path='${suggestions[lang]}')`);
+
+      workspaceDependencyChecks.language_workspace_discovery = {
+        root: discoveryRoot,
+        candidates_found: candidates.length,
+        suggestions,
+        commands,
+        current_overrides: {
+          python: getWorkspaceOverride("python"),
+          typescript: getWorkspaceOverride("typescript"),
+          vue: getWorkspaceOverride("vue"),
+        },
+      };
+    } else {
+      workspaceDependencyChecks.language_workspace_discovery = {
+        root: discoveryRoot,
+        suggestions: null,
+        commands: [],
+        note: "Set a root workspace first to enable language workspace discovery.",
+      };
+    }
+
     const enabledLanguages = Object.keys(config.languages).filter((lang) => config.languages[lang]?.enabled);
     const backendCommands = Object.fromEntries(
       enabledLanguages.map((lang) => {
@@ -790,6 +827,25 @@ server.registerTool(
     }
     if (config.languages.python?.enabled && !uvCacheWritable) {
       recommendations.push(`UV cache directory is not writable: ${uvCacheDir}. Set UV_CACHE_DIR to a writable path.`);
+    }
+    const workspaceDiscovery = workspaceDependencyChecks.language_workspace_discovery as
+      | { suggestions: Record<string, string | null> | null; commands: string[]; current_overrides?: Record<string, string | null> }
+      | undefined;
+    if (!activeWorkspacePath) {
+      recommendations.push("Set a root workspace first, then run doctor again to discover per-language workspaces.");
+    } else if (workspaceDiscovery?.suggestions) {
+      const missingMappings = (Object.keys(config.languages) as Language[])
+        .filter((lang) => config.languages[lang]?.enabled)
+        .filter((lang) => !getWorkspaceOverride(lang))
+        .filter((lang) => !!workspaceDiscovery.suggestions?.[lang]);
+      if (missingMappings.length > 0) {
+        recommendations.push(
+          `Language workspaces are recommended for semantic tools. Missing mappings: ${missingMappings.join(", ")}.`
+        );
+        for (const cmd of workspaceDiscovery.commands) {
+          recommendations.push(`Suggested command: ${cmd}`);
+        }
+      }
     }
     if (probe_backends && probeResults.python?.ok === false) {
       const pythonProbeError = String(probeResults.python?.error || "");
