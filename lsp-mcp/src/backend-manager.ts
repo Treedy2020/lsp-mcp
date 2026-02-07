@@ -7,6 +7,7 @@
  * - Graceful shutdown handling
  */
 
+import * as fs from "fs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
@@ -224,11 +225,21 @@ export class BackendManager {
     console.error(`[BackendManager] Command: ${backendConfig.command} ${backendConfig.args.join(" ")}`);
 
     const { command, args } = backendConfig;
+    const env = backendConfig.env ? { ...process.env, ...backendConfig.env } : process.env;
+    const uvCacheDir = backendConfig.env?.UV_CACHE_DIR;
+    if (uvCacheDir) {
+      try {
+        fs.mkdirSync(uvCacheDir, { recursive: true });
+      } catch {
+        // Best effort: if this fails, uv will surface a concrete startup error.
+      }
+    }
 
     // Create MCP client transport (this spawns the subprocess)
     const transport = new StdioClientTransport({
       command,
       args,
+      env,
       stderr: "pipe",
     });
 
@@ -257,12 +268,12 @@ export class BackendManager {
 
     this.backends.set(language, state);
     
-    // Setup monitoring
-    this.monitorBackend(language, transport);
-
     try {
       // Connect to the backend
       await client.connect(transport);
+      // Setup monitoring only after successful connect to avoid restart loops
+      // when startup fails before the MCP handshake completes.
+      this.monitorBackend(language, transport);
 
       // Get server info (name and version)
       const serverInfo = client.getServerVersion();
@@ -302,6 +313,10 @@ export class BackendManager {
     toolName: string,
     args: Record<string, unknown>
   ): Promise<{ content: Array<{ type: "text"; text: string }> }> {
+    if (this.isShuttingDown) {
+      throw new Error("Backend manager is shutting down");
+    }
+
     const state = await this.getBackend(language);
 
     if (state.status !== "ready") {
@@ -316,8 +331,12 @@ export class BackendManager {
       });
       return result as { content: Array<{ type: "text"; text: string }> };
     } catch (error) {
+      const wasStopped = state.status === "stopped";
       state.status = "error";
       state.lastError = String(error);
+      if (this.isShuttingDown || wasStopped) {
+        throw error instanceof Error ? error : new Error(String(error));
+      }
       console.error(`[BackendManager] ${language} tool call failed, attempting restart:`, error);
       try {
         await this.restartBackend(language);

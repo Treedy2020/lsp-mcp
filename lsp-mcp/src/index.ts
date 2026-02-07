@@ -964,10 +964,24 @@ function findDeclarationInFile(content: string, identifier: string): { line: num
 
 function workspaceVueSemanticDepsAvailable(workspacePath?: string | null): boolean {
   if (!workspacePath) return false;
-  const resolved = path.isAbsolute(workspacePath) ? workspacePath : path.resolve(workspacePath);
-  const hasTypeScript = fs.existsSync(path.join(resolved, "node_modules", "typescript", "lib", "tsserver.js"));
-  const hasLanguageServer = fs.existsSync(path.join(resolved, "node_modules", "@vue", "language-server"));
-  return hasTypeScript && hasLanguageServer;
+  let current = path.isAbsolute(workspacePath) ? workspacePath : path.resolve(workspacePath);
+  if (!fs.existsSync(current)) return false;
+  if (!fs.statSync(current).isDirectory()) {
+    current = path.dirname(current);
+  }
+
+  while (true) {
+    const hasTypeScript = fs.existsSync(path.join(current, "node_modules", "typescript", "lib", "tsserver.js"));
+    const hasLanguageServer = fs.existsSync(path.join(current, "node_modules", "@vue", "language-server"));
+    if (hasTypeScript && hasLanguageServer) {
+      return true;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+
+  return false;
 }
 
 function bundledVueSemanticDepsAvailable(): boolean {
@@ -986,10 +1000,11 @@ function bundledVueSemanticDepsAvailable(): boolean {
   }
 }
 
-function vueSemanticDepsMissing(workspacePath?: string | null): boolean {
+function vueSemanticDepsMissing(workspacePath?: string | null, filePath?: string | null): boolean {
   if (VUE_FORCE_MISSING_SEMANTIC_DEPS) return true;
   if (bundledVueSemanticDepsAvailable()) return false;
   if (workspaceVueSemanticDepsAvailable(workspacePath)) return false;
+  if (workspaceVueSemanticDepsAvailable(filePath)) return false;
   return true;
 }
 
@@ -1785,6 +1800,7 @@ function preRegisterTools(): void {
         inputSchema: tool.schema,
       },
       async (args) => {
+        const hasExplicitPathArg = typeof args.path === "string";
         // --- Smart Parameter Correction (Fuzzy Logic) ---
         // Automatically fix out-of-bounds line/column numbers to prevent backend errors
         let paramWarning: string | undefined;
@@ -1970,10 +1986,23 @@ function preRegisterTools(): void {
 
         // Find the target path argument
         const filePath = (args.file as string) || (args.path as string);
+        const resolvedPathArg = typeof filePath === "string"
+          ? (path.isAbsolute(filePath)
+            ? filePath
+            : (activeWorkspacePath ? path.join(activeWorkspacePath, filePath) : path.resolve(filePath)))
+          : null;
+        const searchPathIsDirectory =
+          (tool.name === "search" || tool.name === "workspace_symbol") &&
+          !!resolvedPathArg &&
+          fs.existsSync(resolvedPathArg) &&
+          fs.statSync(resolvedPathArg).isDirectory();
         
         // Handle search without path (uses active workspace implicitly via backend logic)
         // Use active workspace inference to auto-start at least one backend for better OOB behavior
-        if ((tool.name === "search" || tool.name === "workspace_symbol") && !filePath) {
+        if (
+          (tool.name === "search" || tool.name === "workspace_symbol") &&
+          (!filePath || (searchPathIsDirectory && hasExplicitPathArg))
+        ) {
              const enabledLanguages = Object.keys(config.languages).filter(
                (lang) => config.languages[lang].enabled
              );
@@ -1996,6 +2025,11 @@ function preRegisterTools(): void {
              if (tool.name === "workspace_symbol" && !backendArgs.path && activeWorkspacePath) {
                backendArgs.path = activeWorkspacePath;
              }
+             const requestedWorkspacePath = typeof backendArgs.path === "string"
+               ? (path.isAbsolute(backendArgs.path)
+                 ? backendArgs.path
+                 : (activeWorkspacePath ? path.join(activeWorkspacePath, backendArgs.path) : path.resolve(backendArgs.path)))
+               : activeWorkspacePath;
              const workspaceQuery =
                tool.name === "workspace_symbol" && typeof args.query === "string" && args.query.trim().length > 0
                  ? args.query.trim()
@@ -2005,7 +2039,7 @@ function preRegisterTools(): void {
              const getSingletonLock = (lang: string): Promise<SingletonGuardResult> => {
                const existing = lockByLanguage.get(lang);
                if (existing) return existing;
-               const next = ensureBackendSingleton(lang, activeWorkspacePath);
+               const next = ensureBackendSingleton(lang, requestedWorkspacePath);
                lockByLanguage.set(lang, next);
                return next;
              };
@@ -2019,7 +2053,7 @@ function preRegisterTools(): void {
                  throw new Error(`Singleton lock unavailable for ${lang}`);
                }
                if (lock.proxyHost && lock.proxyPort) {
-                 return callRemoteBackendTool(lock.proxyHost, lock.proxyPort, lang, toolName, callArgs, activeWorkspacePath);
+                 return callRemoteBackendTool(lock.proxyHost, lock.proxyPort, lang, toolName, callArgs, requestedWorkspacePath);
                }
                return backendManager.callTool(lang, toolName, callArgs);
              };
@@ -2029,8 +2063,8 @@ function preRegisterTools(): void {
                if (lock.proxyHost && lock.proxyPort) return true;
                await backendManager.getBackend(lang);
                startedBackends.add(lang);
-               if (activeWorkspacePath) {
-                 await backendManager.callTool(lang, "switch_workspace", { path: activeWorkspacePath });
+               if (requestedWorkspacePath) {
+                 await backendManager.callTool(lang, "switch_workspace", { path: requestedWorkspacePath });
                }
                return true;
              };
@@ -2045,8 +2079,8 @@ function preRegisterTools(): void {
                    }
                  }
              } else if (startedEnabled.length === 0) {
-                 const preferred = activeWorkspacePath
-                   ? inferLanguageFromPath(activeWorkspacePath, config)
+                 const preferred = requestedWorkspacePath
+                   ? inferLanguageFromPath(requestedWorkspacePath, config)
                    : null;
                  const fallback = enabledLanguages.length === 1 ? enabledLanguages[0] : null;
                  const candidate = preferred || fallback;
@@ -2175,7 +2209,7 @@ function preRegisterTools(): void {
         const proxyHost = singletonLock.proxyHost;
         const proxyPort = singletonLock.proxyPort;
         const hasProxy = !!proxyHost && !!proxyPort;
-        const missingVueToolDeps = !hasProxy && isVueFallbackCapableTool && vueSemanticDepsMissing(lockWorkspace);
+        const missingVueToolDeps = !hasProxy && isVueFallbackCapableTool && vueSemanticDepsMissing(lockWorkspace, absPath);
         const callBackendTool = (toolName: string, backendArgs: Record<string, unknown>) => {
           if (proxyHost && proxyPort) {
             return callRemoteBackendTool(proxyHost, proxyPort, language, toolName, backendArgs, activeWorkspacePath || lockWorkspace);
@@ -2205,6 +2239,8 @@ function preRegisterTools(): void {
             if (msg.includes("ENOENT")) {
                 if (language === "python") hint = "Make sure 'uv' (recommended) or 'python' is installed and in your PATH.";
                 else hint = "Make sure 'node' and 'npm' are installed and in your PATH.";
+            } else if (language === "python" && (msg.includes("Connection closed") || msg.includes("MCP error -32000"))) {
+                hint = "Python backend failed before handshake. Run `uv run --directory dist/bundled/python python-lsp-mcp --help` once to install runtime deps, or ensure network access / UV cache is available.";
             } else {
                 hint = "Check server logs for details. You may need to install the backend manually.";
             }

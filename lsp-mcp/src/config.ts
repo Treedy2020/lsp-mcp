@@ -404,6 +404,9 @@ export function getBackendCommand(
           enabled: true,
           command: "uv",
           args: ["run", "--quiet", "--directory", bundledPath, "python-lsp-mcp"],
+          env: {
+            UV_CACHE_DIR: process.env.UV_CACHE_DIR || path.join(os.tmpdir(), "lsp-mcp-uv-cache"),
+          },
         };
       }
 

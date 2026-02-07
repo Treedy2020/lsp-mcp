@@ -57,6 +57,15 @@ describe("Unified Search", () => {
     expect(result.matches.length).toBeGreaterThan(0);
   });
 
+  it("should treat directory path as workspace scope for search", async () => {
+    await client.callTool("switch_workspace", { path: TEST_DIR });
+    const result = await client.callTool("search", { query: MARKER, path: TEST_DIR });
+
+    expect(result.error).toBeUndefined();
+    expect(Array.isArray(result.matches)).toBe(true);
+    expect(result.matches.length).toBeGreaterThan(0);
+  });
+
   it("should return workspace_symbol matches without requiring pre-started backends", async () => {
     await client.callTool("switch_workspace", { path: TEST_DIR });
     const result = await client.callTool("workspace_symbol", { query: MARKER });
