@@ -557,6 +557,7 @@ Recommended Workflow:
 switch_workspace(path="/repo")  # Global root for non-semantic tools
 discover_language_workspaces(root="/repo", apply=true)
 # or switch_workspace_for_language(language="typescript", path="/repo/apps/web")
+semantic_session_start(language="typescript", workspace="/repo/apps/web")
 \`\`\`
 
 ### 2. Smart Exploration
