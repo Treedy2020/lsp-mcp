@@ -34,7 +34,11 @@ export const statusSchema = {};
  */
 export async function status(
   backendManager: BackendManager,
-  config: Config
+  config: Config,
+  workspaces?: {
+    global: string | null;
+    perLanguage?: Record<string, string | null>;
+  }
 ): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const backendStatus = backendManager.getStatus();
   const versions = backendManager.getVersions();
@@ -55,6 +59,10 @@ export async function status(
         enabled: config.languages.vue?.enabled ?? false,
       },
       autoUpdate: config.autoUpdate,
+    },
+    workspaces: {
+      global: workspaces?.global ?? null,
+      per_language: workspaces?.perLanguage ?? {},
     },
     backends: backendStatus,
     versions: versions.map((v) => ({

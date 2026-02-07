@@ -29,6 +29,9 @@ describe("Meta Tools", () => {
     expect(result.server).toBe("lsp-mcp");
     expect(result.version).toBeDefined();
     expect(result.config).toBeDefined();
+    expect(result.workspaces).toBeDefined();
+    expect(result.workspaces.global).toBeDefined();
+    expect(result.workspaces.per_language).toBeDefined();
   });
 
   it("should expose legacy namespaced unified aliases", async () => {

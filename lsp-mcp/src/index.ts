@@ -405,7 +405,18 @@ async function updateAndRestartBackend(language: Language): Promise<{ oldVersion
 server.registerTool(
   "status",
   { description: "Get status of all LSP backends and server configuration" },
-  async () => statusTool(backendManager, config)
+  async () => statusTool(
+    backendManager,
+    config,
+    {
+      global: activeWorkspacePath,
+      perLanguage: {
+        python: getWorkspaceForLanguage("python"),
+        typescript: getWorkspaceForLanguage("typescript"),
+        vue: getWorkspaceForLanguage("vue"),
+      },
+    }
+  )
 );
 
 server.registerTool(

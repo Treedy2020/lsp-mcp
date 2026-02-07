@@ -354,6 +354,8 @@ export function getBackendCommand(
   language: Language,
   config: Config
 ): BackendConfig | null {
+  const requireBundledBackends =
+    (process.env.LSP_MCP_REQUIRE_BUNDLED_BACKENDS ?? "false").toLowerCase() === "true";
   const langConfig = config.languages[language];
   if (!langConfig || !langConfig.enabled) return null;
 
@@ -385,6 +387,11 @@ export function getBackendCommand(
           args: [path.join(bundledPath, "dist", "index.js")],
         };
       }
+      if (requireBundledBackends) {
+        throw new Error(
+          "Bundled pyright backend not found. Run `bun run build` in lsp-mcp to produce dist/bundled/pyright."
+        );
+      }
 
       return {
         enabled: true,
@@ -409,6 +416,11 @@ export function getBackendCommand(
           },
         };
       }
+      if (requireBundledBackends) {
+        throw new Error(
+          "Bundled python backend not found. Run `bun run build` in lsp-mcp to produce dist/bundled/python."
+        );
+      }
 
       // python-lsp-mcp via uvx
       return {
@@ -430,6 +442,11 @@ export function getBackendCommand(
         args: [path.join(bundledPath, "dist", "index.js")],
       };
     }
+    if (requireBundledBackends) {
+      throw new Error(
+        "Bundled typescript backend not found. Run `bun run build` in lsp-mcp to produce dist/bundled/typescript."
+      );
+    }
 
     return {
       enabled: true,
@@ -448,6 +465,11 @@ export function getBackendCommand(
         command: "node",
         args: [path.join(bundledPath, "dist", "index.js")],
       };
+    }
+    if (requireBundledBackends) {
+      throw new Error(
+        "Bundled vue backend not found. Run `bun run build` in lsp-mcp to produce dist/bundled/vue."
+      );
     }
 
     return {
