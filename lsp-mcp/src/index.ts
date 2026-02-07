@@ -167,6 +167,132 @@ function withSemanticContext(
   }
 }
 
+type WorkspaceCandidate = {
+  dir: string;
+  pythonScore: number;
+  typescriptScore: number;
+  vueScore: number;
+  hasPyproject: boolean;
+  hasRequirements: boolean;
+  hasPackageJson: boolean;
+  hasTsconfig: boolean;
+  hasViteConfig: boolean;
+  hasVueDependency: boolean;
+};
+
+function fileExistsSafe(p: string): boolean {
+  try {
+    return fs.existsSync(p);
+  } catch {
+    return false;
+  }
+}
+
+function hasVueDependencyInPackageJson(dir: string): boolean {
+  const pkgPath = path.join(dir, "package.json");
+  if (!fileExistsSafe(pkgPath)) return false;
+  try {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+    const deps = {
+      ...(pkg.dependencies || {}),
+      ...(pkg.devDependencies || {}),
+      ...(pkg.peerDependencies || {}),
+    } as Record<string, string>;
+    return "vue" in deps || "@vue/runtime-core" in deps;
+  } catch {
+    return false;
+  }
+}
+
+function evaluateWorkspaceCandidate(dir: string): WorkspaceCandidate {
+  const hasPyproject = fileExistsSafe(path.join(dir, "pyproject.toml"));
+  const hasRequirements = fileExistsSafe(path.join(dir, "requirements.txt"));
+  const hasPackageJson = fileExistsSafe(path.join(dir, "package.json"));
+  const hasTsconfig = fileExistsSafe(path.join(dir, "tsconfig.json"));
+  const hasViteConfig =
+    fileExistsSafe(path.join(dir, "vite.config.ts")) ||
+    fileExistsSafe(path.join(dir, "vite.config.js")) ||
+    fileExistsSafe(path.join(dir, "vite.config.mjs")) ||
+    fileExistsSafe(path.join(dir, "vite.config.cjs"));
+  const hasVueDependency = hasVueDependencyInPackageJson(dir);
+
+  const pythonScore = (hasPyproject ? 100 : 0) + (hasRequirements ? 40 : 0);
+  const vueScore = (hasViteConfig ? 70 : 0) + (hasVueDependency ? 60 : 0) + (hasPackageJson ? 10 : 0);
+  const typescriptScore =
+    (hasTsconfig ? 80 : 0) +
+    (hasPackageJson ? 30 : 0) +
+    ((hasTsconfig || hasPackageJson) && !hasVueDependency ? 20 : 0);
+
+  return {
+    dir,
+    pythonScore,
+    typescriptScore,
+    vueScore,
+    hasPyproject,
+    hasRequirements,
+    hasPackageJson,
+    hasTsconfig,
+    hasViteConfig,
+    hasVueDependency,
+  };
+}
+
+function discoverWorkspaceCandidates(rootPath: string, maxDepth = 2): WorkspaceCandidate[] {
+  const candidates: WorkspaceCandidate[] = [];
+  const queue: Array<{ dir: string; depth: number }> = [{ dir: rootPath, depth: 0 }];
+  const seen = new Set<string>();
+  const IGNORED = new Set([".git", "node_modules", "dist", "build", ".venv", ".idea", ".vscode", ".next", ".nuxt"]);
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (seen.has(current.dir)) continue;
+    seen.add(current.dir);
+
+    const candidate = evaluateWorkspaceCandidate(current.dir);
+    if (candidate.pythonScore > 0 || candidate.typescriptScore > 0 || candidate.vueScore > 0) {
+      candidates.push(candidate);
+    }
+
+    if (current.depth >= maxDepth) continue;
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(current.dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (entry.name.startsWith(".")) continue;
+      if (IGNORED.has(entry.name)) continue;
+      queue.push({ dir: path.join(current.dir, entry.name), depth: current.depth + 1 });
+    }
+  }
+
+  return candidates;
+}
+
+function pickLanguageWorkspace(language: Language, candidates: WorkspaceCandidate[]): WorkspaceCandidate | null {
+  const sorted = [...candidates].sort((a, b) => {
+    if (language === "python") return b.pythonScore - a.pythonScore;
+    if (language === "vue") return b.vueScore - a.vueScore;
+    return b.typescriptScore - a.typescriptScore;
+  });
+
+  if (language === "typescript") {
+    // Prefer TS-only project over Vue app when both are present.
+    const tsOnly = sorted.find((c) => c.typescriptScore > 0 && c.vueScore === 0);
+    if (tsOnly) return tsOnly;
+  }
+
+  return (
+    sorted.find((c) => {
+      if (language === "python") return c.pythonScore > 0;
+      if (language === "vue") return c.vueScore > 0;
+      return c.typescriptScore > 0;
+    }) || null
+  );
+}
+
 // Create MCP server
 const server = new McpServer({
   name: "lsp-mcp",
@@ -2064,6 +2190,119 @@ server.registerTool(
           global_workspace: activeWorkspacePath,
           result,
         }, null, 2),
+      }],
+    };
+  }
+);
+
+server.registerTool(
+  "discover_language_workspaces",
+  {
+    description: "Discover likely per-language project roots under a monorepo root and optionally apply them.",
+    inputSchema: {
+      root: z.string().optional().describe("Absolute root directory to scan. Defaults to global workspace if set."),
+      max_depth: z.number().int().min(0).max(4).default(2).optional().describe("Directory scan depth (default: 2)."),
+      apply: z.boolean().default(false).optional().describe("Whether to apply discovered mappings to this session."),
+    },
+  },
+  async ({ root, max_depth, apply }) => {
+    const scanRoot = root || activeWorkspacePath;
+    if (!scanRoot) {
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            error: "MISSING_SCAN_ROOT",
+            message: "Provide root=... or set global workspace first.",
+            next_step: "Call switch_workspace(path='/abs/root') or discover_language_workspaces(root='/abs/root').",
+          }),
+        }],
+      };
+    }
+    if (!path.isAbsolute(scanRoot)) {
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            error: "ROOT_MUST_BE_ABSOLUTE",
+            root: scanRoot,
+          }),
+        }],
+      };
+    }
+    if (!fileExistsSafe(scanRoot) || !fs.statSync(scanRoot).isDirectory()) {
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            error: "ROOT_NOT_FOUND",
+            root: scanRoot,
+          }),
+        }],
+      };
+    }
+
+    const depth = typeof max_depth === "number" ? max_depth : 2;
+    const candidates = discoverWorkspaceCandidates(scanRoot, depth);
+
+    const picked: Record<Language, WorkspaceCandidate | null> = {
+      python: pickLanguageWorkspace("python", candidates),
+      typescript: pickLanguageWorkspace("typescript", candidates),
+      vue: pickLanguageWorkspace("vue", candidates),
+    };
+    const suggestions: Record<Language, string | null> = {
+      python: picked.python?.dir || null,
+      typescript: picked.typescript?.dir || null,
+      vue: picked.vue?.dir || null,
+    };
+
+    const applied: Record<string, unknown> = {};
+    if (apply) {
+      for (const language of Object.keys(suggestions) as Language[]) {
+        const langRoot = suggestions[language];
+        if (!langRoot) continue;
+        activeWorkspaceByLanguage.set(language, langRoot);
+        if (startedBackends.has(language)) {
+          try {
+            const forwarded = await backendManager.callTool(language, "switch_workspace", { path: langRoot });
+            applied[language] = JSON.parse(forwarded.content[0].text);
+          } catch (error) {
+            applied[language] = { error: String(error) };
+          }
+        } else {
+          applied[language] = { status: "not_started", message: "Workspace set for next backend start" };
+        }
+      }
+    }
+
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          root: scanRoot,
+          max_depth: depth,
+          suggestions,
+          candidates: candidates.map((c) => ({
+            dir: c.dir,
+            scores: {
+              python: c.pythonScore,
+              typescript: c.typescriptScore,
+              vue: c.vueScore,
+            },
+            markers: {
+              pyproject: c.hasPyproject,
+              requirements: c.hasRequirements,
+              package_json: c.hasPackageJson,
+              tsconfig: c.hasTsconfig,
+              vite_config: c.hasViteConfig,
+              vue_dependency: c.hasVueDependency,
+            },
+          })),
+          applied: apply ? applied : null,
+          next_step: apply
+            ? "Use status to verify workspaces.overrides and run semantic tools."
+            : "Re-run with apply=true to set language workspaces in this session.",
+        }),
       }],
     };
   }
