@@ -160,4 +160,28 @@ describe("TypeScript Hierarchy Tools", () => {
     expect(result.count).toBeGreaterThan(0);
     expect(typeof result.tokens[0].token_type).toBe("string");
   });
+
+  it("should return moniker-style symbol identity", async () => {
+    const result = await client.callTool("moniker", {
+      file: TEST_FILE,
+      line: 8,
+      column: 10,
+    });
+    expect(result.error).toBeUndefined();
+    expect(typeof result.identifier).toBe("string");
+    expect(typeof result.symbol).toBe("string");
+  });
+
+  it("should resolve inlay hint at symbol position", async () => {
+    const result = await client.callTool("inlay_hint_resolve", {
+      file: TEST_FILE,
+      line: 8,
+      column: 17,
+    });
+    if (result.error) {
+      expect(result.error).toContain("No inlay hint");
+      return;
+    }
+    expect(typeof result.label).toBe("string");
+  });
 });

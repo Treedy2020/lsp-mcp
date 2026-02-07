@@ -47,4 +47,35 @@ describe("Vue Language Workspace", () => {
     expect(result.error).toBeUndefined();
     expect(typeof result.file).toBe("string");
   }, 120000);
+
+  it("should return linked editing ranges for Vue workspace", async () => {
+    const testFile = path.join(WORKSPACE_ROOT, "src/components/__lsp_linked_editing_test__.vue");
+    fs.writeFileSync(
+      testFile,
+      [
+        "<script setup lang=\"ts\">",
+        "const sharedName = 'x'",
+        "console.log(sharedName)",
+        "</script>",
+        "",
+      ].join("\n")
+    );
+
+    try {
+      await client.callTool("switch_workspace_for_language", {
+        language: "vue",
+        path: WORKSPACE_ROOT,
+      });
+      const result = await client.callTool("linked_editing_range", {
+        file: testFile,
+        line: 2,
+        column: 8,
+      });
+      expect(result.error).toBeUndefined();
+      expect(Array.isArray(result.ranges)).toBe(true);
+      expect(result.count).toBeGreaterThan(1);
+    } finally {
+      if (fs.existsSync(testFile)) fs.unlinkSync(testFile);
+    }
+  }, 120000);
 });

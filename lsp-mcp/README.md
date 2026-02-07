@@ -49,7 +49,8 @@ git_diagnostics
 
 Use these directly; language is inferred from file/path:
 
-- Navigation: `hover`, `definition`, `implementation`, `type_definition`, `call_hierarchy`, `type_hierarchy`, `document_highlight`, `selection_range`, `folding_range`, `document_link`, `linked_editing_range`, `semantic_tokens`, `references`, `peek_definition`, `workspace_symbol`
+- Navigation: `hover`, `definition`, `implementation`, `type_definition`, `call_hierarchy`, `type_hierarchy`, `document_highlight`, `selection_range`, `folding_range`, `document_link`, `linked_editing_range`, `semantic_tokens`, `moniker`, `references`, `peek_definition`, `workspace_symbol`
+- Hinting: `inlay_hints`, `inlay_hint_resolve`, `read_file_with_hints`
 - Editing support: `completions`, `signature_help`, `prepare_rename`, `rename`, `code_action`, `run_code_action`, `code_lens`
 - Analysis: `diagnostics`, `git_diagnostics`, `symbols`, `search`, `summarize_file`, `read_file_with_hints`, `project_structure`
 - Sync/edit loop: `update_document`

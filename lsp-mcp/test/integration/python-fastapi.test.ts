@@ -138,4 +138,31 @@ describe("Python Integration (FastAPI)", () => {
        if (fs.existsSync(testFile)) fs.unlinkSync(testFile);
      }
   }, 60000);
+
+  it("should return semantic tokens or strict NOT_IMPLEMENTED", async () => {
+    const result = await client.callTool("semantic_tokens", {
+      file: "fastapi/applications.py",
+    });
+    if (result.error_code === "NOT_IMPLEMENTED") {
+      expect(result.strict_mode).toBe(true);
+      return;
+    }
+    expect(result.error).toBeUndefined();
+    expect(Array.isArray(result.tokens)).toBe(true);
+    expect(result.count).toBeGreaterThan(0);
+  }, 60000);
+
+  it("should return linked editing ranges or strict NOT_IMPLEMENTED", async () => {
+    const result = await client.callTool("linked_editing_range", {
+      file: "fastapi/applications.py",
+      line: 1336,
+      column: 9,
+    });
+    if (result.error_code === "NOT_IMPLEMENTED") {
+      expect(result.strict_mode).toBe(true);
+      return;
+    }
+    expect(result.error).toBeUndefined();
+    expect(Array.isArray(result.ranges)).toBe(true);
+  }, 60000);
 });
