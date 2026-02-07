@@ -14,12 +14,21 @@ describe("Vue Fallback", () => {
   beforeAll(async () => {
     fs.mkdirSync(path.join(TEST_DIR, "src"), { recursive: true });
     fs.writeFileSync(path.join(TEST_DIR, "package.json"), JSON.stringify({ name: "vue-fixture", version: "0.0.0" }));
+    fs.writeFileSync(path.join(TEST_DIR, ".gitignore"), "src/auto-imports.d.ts\n");
+    fs.writeFileSync(
+      path.join(TEST_DIR, "src", "auto-imports.d.ts"),
+      `declare global {\n` +
+      `  const useMagic: () => string\n` +
+      `}\n` +
+      `export {}\n`,
+    );
     vueFile = path.join(TEST_DIR, "src", "App.vue");
     fs.writeFileSync(
       vueFile,
       `<script setup lang="ts">\n` +
       `const name = "world"\n` +
-      `function go() { return name }\n` +
+      `const magic = useMagic()\n` +
+      `function go() { return name + magic }\n` +
       `</script>\n\n` +
       `<template>\n` +
       `  <div>{{ name }}</div>\n` +
@@ -83,5 +92,17 @@ describe("Vue Fallback", () => {
     expect(typeof definition).toBe("object");
     expect(definition.error).toBeUndefined();
     expect(definition.file).toBeDefined();
+  });
+
+  it("should resolve definitions from gitignored declaration files", async () => {
+    await client.callTool("switch_workspace", { path: TEST_DIR });
+    const definition = await client.callTool("definition", { file: vueFile, line: 3, column: 16 });
+    const hover = await client.callTool("hover", { file: vueFile, line: 3, column: 16 });
+
+    expect(definition.error).toBeUndefined();
+    expect(definition.file).toContain("auto-imports.d.ts");
+    expect(hover.error).toBeUndefined();
+    expect(typeof hover.documentation).toBe("string");
+    expect(hover.documentation).toContain("auto-imports.d.ts");
   });
 });
