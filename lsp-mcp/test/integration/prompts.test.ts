@@ -42,4 +42,27 @@ describe("Prompt Registration", () => {
     expect(text).toContain("project_structure");
     expect(text).toContain("summarize_file");
   });
+
+  it("should include mixed-language workspace guidance in quick-start prompt", async () => {
+    const result = await client.request("prompts/get", {
+      name: "lsp-quick-start",
+    });
+
+    const text = result.messages?.[0]?.content?.text ?? "";
+    expect(text).toContain("switch_workspace_for_language");
+    expect(text).toContain("discover_language_workspaces");
+    expect(text).toContain("doctor");
+    expect(text).toContain("resolved_workspace");
+  });
+
+  it("should include strict semantic workspace workflow in rules prompt", async () => {
+    const result = await client.request("prompts/get", {
+      name: "lsp-rules",
+    });
+
+    const text = result.messages?.[0]?.content?.text ?? "";
+    expect(text).toContain("switch_workspace_for_language");
+    expect(text).toContain("discover_language_workspaces");
+    expect(text).toContain("semantic tools");
+  });
 });

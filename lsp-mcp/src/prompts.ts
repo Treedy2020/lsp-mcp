@@ -287,16 +287,18 @@ references(...) → Find all usages
 4. Repeat until clean
 \`\`\`
 
-### Pattern 3: Polyglot Projects (Mixed TS/Python)
+### Pattern 3: Polyglot Projects (Mixed TS/Python/Vue)
 
-\`diagnostics(path)\` only checks ONE language at a time based on priority.
+Semantic tools are strict in mixed repos. Configure language workspaces first.
 
 \`\`\`
-1. Use git_diagnostics() FIRST (It handles mixed languages correctly).
-2. If full scan needed:
-   - diagnostics("backend/")  -> Checks Python
-   - diagnostics("frontend/") -> Checks TypeScript
-   - DO NOT run diagnostics(".") on root if mixed.
+1. Set a global root for non-semantic tools:
+   - switch_workspace(path="/repo")
+2. Map language roots for semantic tools:
+   - discover_language_workspaces(root="/repo", apply=true)
+   - or switch_workspace_for_language(language="typescript", path="/repo/apps/web")
+3. Use git_diagnostics() FIRST for changed files across languages.
+4. For full scan, run diagnostics() per language workspace path.
 \`\`\`
 
 ### Pattern 4: Learn API Before Using
@@ -353,7 +355,19 @@ Before using unfamiliar APIs or methods:
 2. Use signature_help() to see exact parameter signatures
 3. Then write code with confidence
 
-### 4. Always Verify with Diagnostics After Changes
+### 4. Set Language Workspaces Before Semantic Calls
+
+\`\`\`
+GOOD: switch_workspace_for_language(...) → hover/definition/references
+BAD:  Run semantic tools in a mixed repo without language mapping
+\`\`\`
+
+In mixed-language repos:
+1. Use switch_workspace(path="/repo") for global non-semantic context.
+2. Use switch_workspace_for_language(...) or discover_language_workspaces(..., apply=true).
+3. Then run semantic tools (hover, definition, references, diagnostics).
+
+### 5. Always Verify with Diagnostics After Changes
 
 \`\`\`
 GOOD: Edit code → diagnostics() → fix issues → done
@@ -365,7 +379,7 @@ After any code modification:
 2. Review and fix any type errors or warnings
 3. Repeat until clean
 
-### 5. Use Refactoring Tools for Cross-File Changes
+### 6. Use Refactoring Tools for Cross-File Changes
 
 \`\`\`
 GOOD: rename() to rename across files
@@ -402,12 +416,14 @@ All LSP tools use (file, line, column) positions.
 
 \`\`\`
 1. Understand the task
-2. Explore relevant code with symbols/hover/definition
-3. Write/edit code
-4. diagnostics() → check for errors
-5. Fix any issues found
-6. Repeat 4-5 until clean
-7. [Optional] Run tests
+2. switch_workspace(path="/repo")
+3. switch_workspace_for_language(...) or discover_language_workspaces(..., apply=true)
+4. Explore relevant code with symbols/hover/definition
+5. Write/edit code
+6. diagnostics() → check for errors
+7. Fix any issues found
+8. Repeat 6-7 until clean
+9. [Optional] Run tests
 \`\`\`
 
 Always end with diagnostics to ensure code quality.`,
@@ -536,16 +552,22 @@ Recommended Workflow:
 
 ## Key Workflows
 
-### 1. Smart Exploration
-Instead of reading raw code, use:
+### 1. Workspace Setup (Mandatory for semantic tools in mixed repos)
 \`\`\`
-project_structure() → See file hierarchy
-workspace_symbol("User") → Find where "User" class is
+switch_workspace(path="/repo")  # Global root for non-semantic tools
+discover_language_workspaces(root="/repo", apply=true)
+# or switch_workspace_for_language(language="typescript", path="/repo/apps/web")
+\`\`\`
+
+### 2. Smart Exploration
+\`\`\`
+project_structure(path="/repo") → See file hierarchy
+search("ClassName", path="/repo") → Find candidate symbols quickly
 summarize_file(file) → Get outline of classes/functions
 read_file_with_hints(file) → Read code with type/param annotations
 \`\`\`
 
-### 2. Search → LSP Tools
+### 3. Search → LSP Tools
 \`\`\`
 search("ClassName") → get positions
 peek_definition(file, line, col) → See definition code immediately
@@ -553,16 +575,31 @@ hover(file, line, column) → get type info
 references(...) → find usages
 \`\`\`
 
-### 3. Debug & Fix
+### 4. Debug & Fix
 \`\`\`
 git_diagnostics() → Check errors in changed files
 diagnostics(path) → Check full path
+doctor(probe_backends=true) → Verify backend/runtime/dependency readiness
 code_action(file, line, col) → Get quick fixes (e.g. Organize Imports)
 run_code_action(...) → Apply fix
 \`\`\`
 
+### 5. Routing Observability
+\`\`\`
+search/workspace_symbol/references/diagnostics responses include:
+- resolved_language
+- resolved_workspace
+\`\`\`
+
+Use these fields to confirm the request was routed to the expected language workspace.
+
+## Dependency Expectations (Strict by default)
+- TypeScript semantic tools require a TypeScript toolchain in the target workspace.
+- Vue semantic tools require both \`typescript\` and \`@vue/language-server\` in the target workspace.
+- If dependencies are missing, fix install issues first instead of relying on fallback behavior.
+
 ## Tool Namespacing
-Tools are unified! Just provide the file path, and the server auto-detects the language (Python/TS/Vue).
+Tools are unified. Language is inferred from file/path, but semantic correctness depends on language workspace mapping.
 `,
         },
       },
