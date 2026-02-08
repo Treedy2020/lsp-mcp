@@ -78,6 +78,7 @@
 - [x] Added `doctor.featureCapabilityMatrix.feature_next_steps` with executable per-feature commands for LLM agents.
 - [x] Added `semantic_session_start.feature_probe_sequence` to standardize staged semantic probing workflow.
 - [x] Added per-step `expected_latency_ms` and `failure_signatures` in `semantic_session_start.feature_probe_sequence` for retry/diagnosis policy.
+- [x] Added per-feature `expected_latency_ms` and `failure_signatures` in `doctor.feature_next_steps` for consistent planning metadata.
 
 ### P2
 - [ ] Add automated extraction of per-test latency into machine-readable artifacts (JSON).

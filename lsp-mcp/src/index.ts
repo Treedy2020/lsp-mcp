@@ -1421,6 +1421,32 @@ server.registerTool(
       "read_file_with_hints",
       "call_hierarchy",
     ] as const;
+    const featureProbeMeta: Record<string, { expected_latency_ms: { p50: number; p95: number }; failure_signatures: string[] }> = {
+      semantic_tokens: {
+        expected_latency_ms: { p50: 220, p95: 1800 },
+        failure_signatures: ["NOT_IMPLEMENTED", "Method not found", "VUE_SEMANTIC_DEPS_MISSING"],
+      },
+      linked_editing_range: {
+        expected_latency_ms: { p50: 220, p95: 2000 },
+        failure_signatures: ["NOT_IMPLEMENTED", "count: 0", "Cannot rename symbol at this position"],
+      },
+      moniker: {
+        expected_latency_ms: { p50: 200, p95: 1800 },
+        failure_signatures: ["NOT_IMPLEMENTED", "No symbol moniker available", "No definition found"],
+      },
+      inlay_hint_resolve: {
+        expected_latency_ms: { p50: 260, p95: 2000 },
+        failure_signatures: ["NOT_IMPLEMENTED", "No inlay hint found", "No inlay hint support available"],
+      },
+      read_file_with_hints: {
+        expected_latency_ms: { p50: 300, p95: 2600 },
+        failure_signatures: ["No inlay hint support available", "Failed to read file with hints", "LANGUAGE_WORKSPACE_REQUIRED"],
+      },
+      call_hierarchy: {
+        expected_latency_ms: { p50: 280, p95: 2200 },
+        failure_signatures: ["NOT_IMPLEMENTED", "No call hierarchy available", "LANGUAGE_WORKSPACE_REQUIRED"],
+      },
+    };
     const featureCommandTemplate = (lang: Language, feature: string, workspace: string | null) => {
       const sampleFile =
         findSampleFileForLanguage(workspace, lang) ||
@@ -1443,14 +1469,19 @@ server.registerTool(
       const chainWorkspace = (languageCommandChains[language] as { workspace?: string | null } | undefined)?.workspace || null;
       if (!probe_backends) {
         const featureNextSteps = Object.fromEntries(
-          llmFeatureTargets.map((feature) => [
-            feature,
-            {
-              status: "unknown",
-              command: featureCommandTemplate(language, feature, chainWorkspace),
-              note: "Run doctor(probe_backends=true) for backend capability verification.",
-            },
-          ])
+          llmFeatureTargets.map((feature) => {
+            const meta = featureProbeMeta[feature];
+            return [
+              feature,
+              {
+                status: "unknown",
+                command: featureCommandTemplate(language, feature, chainWorkspace),
+                note: "Run doctor(probe_backends=true) for backend capability verification.",
+                expected_latency_ms: meta.expected_latency_ms,
+                failure_signatures: meta.failure_signatures,
+              },
+            ];
+          })
         );
         featureCapabilityMatrix[lang] = {
           probe_required: true,
@@ -1473,6 +1504,7 @@ server.registerTool(
           llmFeatureTargets.map((feature) => {
             const supported = toolSet.has(feature);
             const command = featureCommandTemplate(language, feature, chainWorkspace);
+            const meta = featureProbeMeta[feature];
             return [
               feature,
               supported
@@ -1480,12 +1512,16 @@ server.registerTool(
                     status: "supported",
                     command,
                     note: `Run ${feature} directly after workspace setup.`,
+                    expected_latency_ms: meta.expected_latency_ms,
+                    failure_signatures: meta.failure_signatures,
                   }
                 : {
                     status: "not_supported",
                     command,
                     fallback_command: "hover(file='/abs/path/to/file', line=1, column=1)",
                     note: "Feature missing in backend; expect strict NOT_IMPLEMENTED.",
+                    expected_latency_ms: meta.expected_latency_ms,
+                    failure_signatures: meta.failure_signatures,
                   },
             ];
           })

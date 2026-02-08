@@ -112,6 +112,8 @@ describe("Meta Tools", () => {
     expect(result.featureCapabilityMatrix).toBeDefined();
     expect(result.featureCapabilityMatrix.typescript?.probe_required).toBe(true);
     expect(result.featureCapabilityMatrix.typescript?.feature_next_steps?.semantic_tokens?.command).toContain("semantic_tokens(");
+    expect(typeof result.featureCapabilityMatrix.typescript?.feature_next_steps?.semantic_tokens?.expected_latency_ms?.p50).toBe("number");
+    expect(Array.isArray(result.featureCapabilityMatrix.typescript?.feature_next_steps?.semantic_tokens?.failure_signatures)).toBe(true);
   });
 
   it("should expose doctor feature capability matrix when probing backends", async () => {
@@ -122,6 +124,8 @@ describe("Meta Tools", () => {
     expect(result.featureCapabilityMatrix.typescript.features.semantic_tokens).toBe("supported");
     expect(result.featureCapabilityMatrix.typescript.feature_next_steps.semantic_tokens.status).toBe("supported");
     expect(result.featureCapabilityMatrix.typescript.feature_next_steps.semantic_tokens.command).toContain("semantic_tokens(");
+    expect(typeof result.featureCapabilityMatrix.typescript.feature_next_steps.semantic_tokens.expected_latency_ms?.p95).toBe("number");
+    expect(result.featureCapabilityMatrix.typescript.feature_next_steps.semantic_tokens.failure_signatures.length).toBeGreaterThan(0);
     expect(["supported", "not_supported"]).toContain(result.featureCapabilityMatrix.python.features.semantic_tokens);
   }, 15000);
 
