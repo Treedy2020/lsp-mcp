@@ -47,6 +47,10 @@ describe("Semantic Session Start", () => {
     expect(Array.isArray(result.feature_probe_sequence)).toBe(true);
     expect(result.feature_probe_sequence.length).toBeGreaterThan(3);
     expect(result.feature_probe_sequence.some((s: any) => s.feature === "moniker")).toBe(true);
+    expect(typeof result.feature_probe_sequence[0].expected_latency_ms?.p50).toBe("number");
+    expect(typeof result.feature_probe_sequence[0].expected_latency_ms?.p95).toBe("number");
+    expect(Array.isArray(result.feature_probe_sequence[0].failure_signatures)).toBe(true);
+    expect(result.feature_probe_sequence[0].failure_signatures.length).toBeGreaterThan(0);
 
     const status = await client.callTool("status", {});
     expect(status.workspaces.overrides.typescript).toBe(TEST_DIR);

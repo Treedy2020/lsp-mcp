@@ -1045,48 +1045,92 @@ server.registerTool(
     const sampleHover = `hover(file='${sampleFile}', line=1, column=1)`;
     commands.push(sampleHover);
     const isSupported = (name: string) => (availableTools ? availableTools.includes(name) : true);
+    const probeMeta: Record<string, { expected_latency_ms: { p50: number; p95: number }; failure_signatures: string[] }> = {
+      hover: {
+        expected_latency_ms: { p50: 120, p95: 1200 },
+        failure_signatures: ["LANGUAGE_WORKSPACE_REQUIRED", "VUE_SEMANTIC_DEPS_MISSING", "No information available at this position"],
+      },
+      definition: {
+        expected_latency_ms: { p50: 180, p95: 1600 },
+        failure_signatures: ["LANGUAGE_WORKSPACE_REQUIRED", "VUE_SEMANTIC_DEPS_MISSING", "No definition found"],
+      },
+      references: {
+        expected_latency_ms: { p50: 260, p95: 2200 },
+        failure_signatures: ["LANGUAGE_WORKSPACE_REQUIRED", "VUE_SEMANTIC_DEPS_MISSING", "count: 0"],
+      },
+      read_file_with_hints: {
+        expected_latency_ms: { p50: 300, p95: 2600 },
+        failure_signatures: ["LANGUAGE_WORKSPACE_REQUIRED", "No inlay hint support available", "Failed to read file with hints"],
+      },
+      semantic_tokens: {
+        expected_latency_ms: { p50: 220, p95: 1800 },
+        failure_signatures: ["NOT_IMPLEMENTED", "Method not found", "VUE_SEMANTIC_DEPS_MISSING"],
+      },
+      moniker: {
+        expected_latency_ms: { p50: 200, p95: 1800 },
+        failure_signatures: ["NOT_IMPLEMENTED", "No symbol moniker available", "No definition found"],
+      },
+      linked_editing_range: {
+        expected_latency_ms: { p50: 220, p95: 2000 },
+        failure_signatures: ["NOT_IMPLEMENTED", "count: 0", "Cannot rename symbol at this position"],
+      },
+    };
     const probeSteps = [
       {
         phase: "p0_bootstrap",
         feature: "hover",
         command: sampleHover,
         expected: "basic semantic pipeline alive",
+        expected_latency_ms: probeMeta.hover.expected_latency_ms,
+        failure_signatures: probeMeta.hover.failure_signatures,
       },
       {
         phase: "p0_bootstrap",
         feature: "definition",
         command: `definition(file='${sampleFile}', line=1, column=1)`,
         expected: "cross-file navigation ready",
+        expected_latency_ms: probeMeta.definition.expected_latency_ms,
+        failure_signatures: probeMeta.definition.failure_signatures,
       },
       {
         phase: "p1_context",
         feature: "references",
         command: `references(file='${sampleFile}', line=1, column=1)`,
         expected: "fan-out impact graph available",
+        expected_latency_ms: probeMeta.references.expected_latency_ms,
+        failure_signatures: probeMeta.references.failure_signatures,
       },
       {
         phase: "p1_context",
         feature: "read_file_with_hints",
         command: `read_file_with_hints(file='${sampleFile}', start_line=1, max_lines=120)`,
         expected: "token-level reading with hints",
+        expected_latency_ms: probeMeta.read_file_with_hints.expected_latency_ms,
+        failure_signatures: probeMeta.read_file_with_hints.failure_signatures,
       },
       {
         phase: "p2_advanced",
         feature: "semantic_tokens",
         command: `semantic_tokens(file='${sampleFile}')`,
         expected: "semantic structure tokens available",
+        expected_latency_ms: probeMeta.semantic_tokens.expected_latency_ms,
+        failure_signatures: probeMeta.semantic_tokens.failure_signatures,
       },
       {
         phase: "p2_advanced",
         feature: "moniker",
         command: `moniker(file='${sampleFile}', line=1, column=1)`,
         expected: "cross-package identity available",
+        expected_latency_ms: probeMeta.moniker.expected_latency_ms,
+        failure_signatures: probeMeta.moniker.failure_signatures,
       },
       {
         phase: "p2_advanced",
         feature: "linked_editing_range",
         command: `linked_editing_range(file='${sampleFile}', line=1, column=1)`,
         expected: "paired edits coordination ready",
+        expected_latency_ms: probeMeta.linked_editing_range.expected_latency_ms,
+        failure_signatures: probeMeta.linked_editing_range.failure_signatures,
       },
     ].map((step) =>
       isSupported(step.feature)
