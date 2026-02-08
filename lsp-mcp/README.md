@@ -65,6 +65,7 @@ For large repos, use preview arguments to reduce token usage:
 - `search` / `workspace_symbol`: `preview_limit` or `page_size` (default `200`), plus `cursor` for next page
 - `diagnostics`: `preview_limit` or `page_size` (default `200`), `summary_only` (default `false`), plus `cursor`
 - `doctor`: `page_size` (default `50`) plus `cursor` for long environment reports
+- `doctor`: set `check_latest_versions=true` to probe registry latest version drift (slower, network-dependent)
 - `project_structure`: `max_depth` (default `3`), `max_entries` (default `300`)
 - `summarize_file`: `max_symbols` (default `200`)
 - `read_file_with_hints`: `start_line` (default `1`), `max_lines` (default `300`)
@@ -93,21 +94,29 @@ Example fields exposed for client/LLM orchestration:
 
 ```json
 {
+  "backend_runtime_mode": "registry",
   "backend_packages": [
     {
       "language": "typescript",
+      "package": "@treedy/typescript-lsp-mcp",
       "package_ref": "@treedy/typescript-lsp-mcp@latest",
+      "registry": "npm",
       "resolver": "npx",
+      "provider": "typescript-lsp-mcp",
       "install_command": "npx --yes @treedy/typescript-lsp-mcp@latest",
       "update_command": "npx --yes @treedy/typescript-lsp-mcp@latest",
-      "default_channel": "latest"
+      "default_channel": "latest",
+      "auto_update_enabled": true
     }
   ],
   "backendPackageDrift": {
     "typescript": {
       "installed_version": "0.2.0",
       "drift_status": "policy_aligned",
-      "next_step": "No action needed."
+      "latest_registry_version": "0.2.0",
+      "latest_status": "up_to_date",
+      "next_step": "No action needed.",
+      "latest_next_step": "Installed version matches latest policy."
     }
   }
 }
@@ -136,6 +145,8 @@ You can configure with env vars or `.lsp-mcp.json` in your workspace.
 | `LSP_MCP_TYPESCRIPT_ENABLED` | `true` | Enable TypeScript backend |
 | `LSP_MCP_VUE_ENABLED` | `true` | Enable Vue backend |
 | `LSP_MCP_AUTO_UPDATE` | `true` | Update backend packages to latest on startup/update |
+| `LSP_MCP_BACKEND_RUNTIME_MODE` | `registry` | Backend runtime strategy: `registry` (default), `auto`, `bundled` |
+| `LSP_MCP_REQUIRE_BUNDLED_BACKENDS` | `false` | Legacy strict bundled mode (equivalent to runtime mode `bundled`) |
 | `LSP_MCP_EAGER_START` | `false` | Start all enabled backends when server boots |
 | `LSP_MCP_IDLE_TIMEOUT` | `600` | Backend idle timeout in seconds |
 
@@ -150,7 +161,8 @@ When `LSP_MCP_AUTO_UPDATE=true`:
 
 ### Runtime dependency expectations
 
-- Lean mode (default): backend packages are fetched when first used.
+- Lean mode (default): backend packages are fetched when first used (`LSP_MCP_BACKEND_RUNTIME_MODE=registry`).
+- Bundled mode: set `LSP_MCP_BACKEND_RUNTIME_MODE=bundled` or `LSP_MCP_REQUIRE_BUNDLED_BACKENDS=true`.
 - Required host tools:
   - TypeScript/Vue/Pyright backends: `node` + `npx`
   - Python backend: `uv` (or `uvx`)

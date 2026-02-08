@@ -79,6 +79,9 @@
 - [x] Added `semantic_session_start.feature_probe_sequence` to standardize staged semantic probing workflow.
 - [x] Added per-step `expected_latency_ms` and `failure_signatures` in `semantic_session_start.feature_probe_sequence` for retry/diagnosis policy.
 - [x] Added per-feature `expected_latency_ms` and `failure_signatures` in `doctor.feature_next_steps` for consistent planning metadata.
+- [x] Added `lsp_probe_profile` meta tool to expose probe planning metadata directly to clients.
+- [x] Defaulted backend runtime strategy to `registry` with explicit `LSP_MCP_BACKEND_RUNTIME_MODE` override (`registry|auto|bundled`).
+- [x] Extended `doctor.backendPackageDrift` with latest-version drift fields (`latest_registry_version`, `latest_status`, `latest_next_step`).
 
 ### P2
 - [ ] Add automated extraction of per-test latency into machine-readable artifacts (JSON).

@@ -72,6 +72,14 @@ let singletonRpcServer: net.Server | null = null;
 let singletonRpcEndpoint: { host: string; port: number } | null = null;
 let singletonRpcStarting = false;
 
+function resolveBackendRuntimeMode(): "registry" | "bundled" | "auto" {
+  const requireBundled = (process.env.LSP_MCP_REQUIRE_BUNDLED_BACKENDS ?? "false").toLowerCase() === "true";
+  if (requireBundled) return "bundled";
+  const mode = (process.env.LSP_MCP_BACKEND_RUNTIME_MODE || "registry").toLowerCase();
+  if (mode === "registry" || mode === "bundled" || mode === "auto") return mode;
+  return "registry";
+}
+
 function getWorkspaceForLanguage(language: Language): string | null {
   return activeWorkspaceByLanguage.get(language) || null;
 }
@@ -310,6 +318,15 @@ const LLM_FEATURE_PROBE_METADATA = {
     failure_signatures: ["NOT_IMPLEMENTED", "No call hierarchy available", "LANGUAGE_WORKSPACE_REQUIRED"],
   },
 } satisfies Record<string, ProbeMetadata>;
+
+const LLM_FEATURE_TARGETS = [
+  "semantic_tokens",
+  "linked_editing_range",
+  "moniker",
+  "inlay_hint_resolve",
+  "read_file_with_hints",
+  "call_hierarchy",
+] as const;
 
 function fileExistsSafe(p: string): boolean {
   try {
@@ -1187,11 +1204,12 @@ server.registerTool(
     description: "Run environment and backend readiness checks for out-of-box troubleshooting.",
     inputSchema: {
       probe_backends: z.boolean().default(false).optional(),
+      check_latest_versions: z.boolean().default(false).optional(),
       page_size: z.number().int().positive().default(50).optional(),
       cursor: z.string().optional(),
     },
   },
-  async ({ probe_backends, page_size, cursor }) => {
+  async ({ probe_backends, check_latest_versions, page_size, cursor }) => {
     const pageSize = typeof page_size === "number" ? page_size : 50;
     if (typeof cursor === "string") {
       const page = readCursorPage("doctor", cursor, pageSize);
@@ -1239,13 +1257,53 @@ server.registerTool(
 
     const checks = {
       node: checkCommand("node"),
+      npm: checkCommand("npm"),
       npx: checkCommand("npx"),
       uv: checkCommand("uv"),
       bun: checkCommand("bun"),
     };
 
     const backendPackages = getBackendPackages(config).filter((pkg) => config.languages[pkg.language]?.enabled);
+    const backendRuntimeMode = resolveBackendRuntimeMode();
     const versionByLanguage = new Map(backendManager.getVersions().map((version) => [version.language, version]));
+    const parseSemver = (raw: string | null): string | null => {
+      if (!raw) return null;
+      const m = raw.match(/(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.-]+)?/);
+      return m ? `${m[1]}.${m[2]}.${m[3]}` : null;
+    };
+    const compareSemver = (left: string, right: string): number => {
+      const a = left.split(".").map((x) => Number.parseInt(x, 10));
+      const b = right.split(".").map((x) => Number.parseInt(x, 10));
+      for (let i = 0; i < 3; i++) {
+        if ((a[i] || 0) > (b[i] || 0)) return 1;
+        if ((a[i] || 0) < (b[i] || 0)) return -1;
+      }
+      return 0;
+    };
+    const fetchLatestRegistryVersion = (
+      pkg: { package: string; registry: "npm" | "pypi"; resolver: "npx" | "uvx" }
+    ): { latest_version: string | null; source: "npm" | "pypi" | "unknown"; error?: string } => {
+      if (!check_latest_versions) {
+        return { latest_version: null, source: "unknown", error: "latest check disabled (set check_latest_versions=true)" };
+      }
+      if (pkg.registry === "npm") {
+        if (!checks.npm.available) {
+          return { latest_version: null, source: "npm", error: "npm not available" };
+        }
+        const out = spawnSync("npm", ["view", pkg.package, "version"], {
+          encoding: "utf-8",
+          timeout: 5000,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        if (out.status !== 0) {
+          return { latest_version: null, source: "npm", error: (out.stderr || out.stdout || "npm view failed").trim() };
+        }
+        const latest = String(out.stdout || "").trim().split("\n")[0] || null;
+        return { latest_version: parseSemver(latest), source: "npm", error: latest ? undefined : "empty version response" };
+      }
+      // PyPI latest lookup is intentionally best-effort and currently deferred.
+      return { latest_version: null, source: "pypi", error: "pypi latest lookup not implemented" };
+    };
     const backendPackageDrift = Object.fromEntries(
       backendPackages.map((pkg) => {
         const versionInfo = versionByLanguage.get(pkg.language);
@@ -1256,6 +1314,9 @@ server.registerTool(
         const usingLatestPolicy = pkg.registry === "npm"
           ? command.includes("@latest")
           : command.includes("--upgrade");
+        const latestRegistry = fetchLatestRegistryVersion(pkg);
+        const installedSemver = parseSemver(installedVersion);
+        const latestSemver = parseSemver(latestRegistry.latest_version);
 
         let driftStatus: "unknown_not_started" | "bundled_static" | "policy_aligned" | "policy_drift" = "unknown_not_started";
         if (backendStatus === "ready" || backendStatus === "error") {
@@ -1263,6 +1324,18 @@ server.registerTool(
           else if (usingLatestPolicy) driftStatus = "policy_aligned";
           else driftStatus = "policy_drift";
         }
+        const latestStatus: "up_to_date" | "outdated" | "unknown_not_started" | "unknown_no_latest" | "unknown_parse_failed" | "unknown_skipped" =
+          backendStatus !== "ready" && backendStatus !== "error"
+            ? "unknown_not_started"
+            : !check_latest_versions
+              ? "unknown_skipped"
+            : !installedSemver
+              ? "unknown_parse_failed"
+              : !latestSemver
+                ? "unknown_no_latest"
+                : compareSemver(installedSemver, latestSemver) >= 0
+                  ? "up_to_date"
+                  : "outdated";
 
         const nextStep = driftStatus === "policy_aligned"
           ? "No action needed."
@@ -1271,6 +1344,17 @@ server.registerTool(
             : driftStatus === "policy_drift"
               ? `Upgrade via: ${pkg.update_command}`
               : `Start backend '${pkg.language}' and run doctor again to verify installed version.`;
+        const versionNextStep = latestStatus === "outdated"
+          ? `Installed ${installedSemver} is behind latest ${latestSemver}. Upgrade via: ${pkg.update_command}`
+          : latestStatus === "unknown_no_latest"
+              ? "Could not resolve latest registry version. Re-run doctor with network access."
+              : latestStatus === "unknown_parse_failed"
+                ? "Installed version string is non-semver. Ensure backend is started and version is reported cleanly."
+                : latestStatus === "unknown_skipped"
+                  ? "Run doctor(check_latest_versions=true) to compare installed versions with latest registry versions."
+                : latestStatus === "unknown_not_started"
+                  ? `Start backend '${pkg.language}' to compare installed version with latest.`
+                  : "Installed version matches latest policy.";
 
         return [pkg.language, {
           language: pkg.language,
@@ -1279,8 +1363,15 @@ server.registerTool(
           package_ref: pkg.package_ref,
           resolver: pkg.resolver,
           configured_command: command,
+          runtime_mode: backendRuntimeMode,
           latest_policy: pkg.default_channel,
           drift_status: driftStatus,
+          latest_registry_version: latestSemver,
+          latest_registry_source: latestRegistry.source,
+          latest_lookup_error: latestRegistry.error || null,
+          installed_semver: installedSemver,
+          latest_status: latestStatus,
+          latest_next_step: versionNextStep,
           update_command: pkg.update_command,
           next_step: nextStep,
         }];
@@ -1428,14 +1519,6 @@ server.registerTool(
       })
     );
 
-    const llmFeatureTargets = [
-      "semantic_tokens",
-      "linked_editing_range",
-      "moniker",
-      "inlay_hint_resolve",
-      "read_file_with_hints",
-      "call_hierarchy",
-    ] as const;
     const featureCommandTemplate = (lang: Language, feature: string, workspace: string | null) => {
       const sampleFile =
         findSampleFileForLanguage(workspace, lang) ||
@@ -1458,7 +1541,7 @@ server.registerTool(
       const chainWorkspace = (languageCommandChains[language] as { workspace?: string | null } | undefined)?.workspace || null;
       if (!probe_backends) {
         const featureNextSteps = Object.fromEntries(
-          llmFeatureTargets.map((feature) => {
+          LLM_FEATURE_TARGETS.map((feature) => {
             const meta = LLM_FEATURE_PROBE_METADATA[feature];
             return [
               feature,
@@ -1484,13 +1567,13 @@ server.registerTool(
         const tools = await backendManager.getTools(language);
         const toolSet = new Set(tools.map((t) => t.name));
         const features = Object.fromEntries(
-          llmFeatureTargets.map((name) => [
+          LLM_FEATURE_TARGETS.map((name) => [
             name,
             toolSet.has(name) ? "supported" : "not_supported",
           ])
         );
         const featureNextSteps = Object.fromEntries(
-          llmFeatureTargets.map((feature) => {
+          LLM_FEATURE_TARGETS.map((feature) => {
             const supported = toolSet.has(feature);
             const command = featureCommandTemplate(language, feature, chainWorkspace);
             const meta = LLM_FEATURE_PROBE_METADATA[feature];
@@ -1587,12 +1670,16 @@ server.registerTool(
       } else if (drift.drift_status === "bundled_static") {
         recommendations.push(`${lang} backend runs from bundled runtime and may drift from latest. ${drift.next_step}`);
       }
+      if (drift.latest_status === "outdated") {
+        recommendations.push(`${lang} backend is behind latest registry version. ${drift.latest_next_step}`);
+      }
     }
 
     const result = {
       ok: recommendations.length === 0,
       checks,
       activeWorkspacePath,
+      backendRuntimeMode: backendRuntimeMode,
       enabledLanguages,
       backendPackageDrift,
       workspaceDependencyChecks,
@@ -1600,6 +1687,7 @@ server.registerTool(
       backendCommands,
       featureCapabilityMatrix,
       probe_backends: !!probe_backends,
+      check_latest_versions: !!check_latest_versions,
       probeResults: probe_backends ? probeResults : undefined,
       recommendations,
     };
@@ -1656,6 +1744,62 @@ server.registerTool(
           next: firstPage.data.page.has_more
             ? { tool: "expand_result", arguments: { cursor: firstPage.data.page.next_cursor, page_size: pageSize } }
             : null,
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+server.registerTool(
+  "lsp_probe_profile",
+  {
+    description: "Get LLM-oriented probe profile metadata (feature order, expected latency, failure signatures).",
+    inputSchema: {
+      language: z.enum(["python", "typescript", "vue"]).optional(),
+      feature: z.string().optional(),
+    },
+  },
+  async ({ language, feature }) => {
+    const phaseByFeature: Record<string, "p0_bootstrap" | "p1_context" | "p2_advanced"> = {
+      hover: "p0_bootstrap",
+      definition: "p0_bootstrap",
+      references: "p1_context",
+      read_file_with_hints: "p1_context",
+      semantic_tokens: "p2_advanced",
+      moniker: "p2_advanced",
+      linked_editing_range: "p2_advanced",
+      inlay_hint_resolve: "p2_advanced",
+      call_hierarchy: "p2_advanced",
+    };
+    const selectedFeatures = feature
+      ? [feature]
+      : [...LLM_FEATURE_TARGETS, "hover", "definition", "references"];
+    const uniqueFeatures = Array.from(new Set(selectedFeatures)).filter(
+      (name) => LLM_FEATURE_PROBE_METADATA[name as keyof typeof LLM_FEATURE_PROBE_METADATA]
+    );
+    const profile = uniqueFeatures.map((name) => ({
+      feature: name,
+      phase: phaseByFeature[name] || "p2_advanced",
+      ...(LLM_FEATURE_PROBE_METADATA[name as keyof typeof LLM_FEATURE_PROBE_METADATA]),
+    }));
+
+    const perLanguage = language
+      ? { [language]: profile }
+      : {
+          python: profile,
+          typescript: profile,
+          vue: profile,
+        };
+
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          profile_version: 1,
+          language: language || "all",
+          features: uniqueFeatures,
+          per_language: perLanguage,
+          source: "lsp-mcp",
         }, null, 2),
       }],
     };

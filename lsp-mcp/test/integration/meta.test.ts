@@ -49,6 +49,7 @@ describe("Meta Tools", () => {
     expect(result.workspaces.per_language).toBeDefined();
     expect(result.workspaces.overrides).toBeDefined();
     expect(result.workspaces.resolved).toBeDefined();
+    expect(["registry", "auto", "bundled"]).toContain(result.backend_runtime_mode);
     expect(result.backend_packages).toBeDefined();
     expect(Array.isArray(result.backend_packages)).toBe(true);
     expect(result.backend_packages.find((pkg: any) => pkg.language === "typescript")?.package_ref).toBe(
@@ -58,6 +59,7 @@ describe("Meta Tools", () => {
 
   it("should expose package install/update strategy in check_versions", async () => {
     const result = await client.callTool("check_versions", {});
+    expect(["registry", "auto", "bundled"]).toContain(result.backend_runtime_mode);
     expect(result.backend_packages).toBeDefined();
     expect(Array.isArray(result.backend_packages)).toBe(true);
 
@@ -100,7 +102,10 @@ describe("Meta Tools", () => {
     expect(result.backendPackageDrift.typescript).toBeDefined();
     expect(result.backendPackageDrift.typescript.package_ref).toBe("@treedy/typescript-lsp-mcp@latest");
     expect(result.backendPackageDrift.typescript.drift_status).toBeDefined();
+    expect(result.backendPackageDrift.typescript.latest_status).toBeDefined();
+    expect(result.backendPackageDrift.typescript.latest_next_step).toBeDefined();
     expect(result.backendPackageDrift.typescript.next_step).toBeDefined();
+    expect(["registry", "auto", "bundled"]).toContain(result.backendRuntimeMode);
     expect(result.workspaceDependencyChecks).toBeDefined();
     expect(result.workspaceDependencyChecks.language_workspace_discovery).toBeDefined();
     expect(result.workspaceDependencyChecks.language_command_chains).toBeDefined();
@@ -143,5 +148,20 @@ describe("Meta Tools", () => {
     expect(second.tool).toBe("doctor");
     expect(second.page.offset).toBe(1);
     expect(Array.isArray(second.items)).toBe(true);
+  });
+
+  it("should expose probe profile metadata for LLM clients", async () => {
+    const allProfile = await client.callTool("lsp_probe_profile", {});
+    expect(allProfile.profile_version).toBe(1);
+    expect(Array.isArray(allProfile.features)).toBe(true);
+    expect(allProfile.features).toContain("semantic_tokens");
+    expect(allProfile.per_language).toBeDefined();
+    expect(typeof allProfile.per_language.typescript[0].expected_latency_ms.p50).toBe("number");
+    expect(Array.isArray(allProfile.per_language.typescript[0].failure_signatures)).toBe(true);
+
+    const tsOnly = await client.callTool("lsp_probe_profile", { language: "typescript", feature: "moniker" });
+    expect(tsOnly.language).toBe("typescript");
+    expect(tsOnly.features).toEqual(["moniker"]);
+    expect(tsOnly.per_language.typescript[0].feature).toBe("moniker");
   });
 });

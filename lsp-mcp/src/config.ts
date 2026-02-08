@@ -339,12 +339,23 @@ function resolveBundledBackend(name: string): string | null {
   return null;
 }
 
+type BackendRuntimeMode = "registry" | "bundled" | "auto";
+
+function resolveBackendRuntimeMode(requireBundledBackends: boolean): BackendRuntimeMode {
+  if (requireBundledBackends) return "bundled";
+  const rawMode = (process.env.LSP_MCP_BACKEND_RUNTIME_MODE || "registry").toLowerCase();
+  if (rawMode === "bundled" || rawMode === "auto" || rawMode === "registry") {
+    return rawMode;
+  }
+  return "registry";
+}
+
 /**
  * Get the backend command for a language.
  *
  * Priority:
- * 1. Bundled backend (dist/bundled/<name>)
- * 2. npm/uvx download (fallback)
+ * 1. Registry runtime via npx/uvx (default)
+ * 2. Bundled runtime only when LSP_MCP_BACKEND_RUNTIME_MODE is auto/bundled
  *
  * When autoUpdate is enabled:
  * - npx: Uses --yes flag to skip prompts (already uses @latest)
@@ -356,6 +367,7 @@ export function getBackendCommand(
 ): BackendConfig | null {
   const requireBundledBackends =
     (process.env.LSP_MCP_REQUIRE_BUNDLED_BACKENDS ?? "false").toLowerCase() === "true";
+  const runtimeMode = resolveBackendRuntimeMode(requireBundledBackends);
   const langConfig = config.languages[language];
   if (!langConfig || !langConfig.enabled) return null;
 
@@ -377,9 +389,9 @@ export function getBackendCommand(
     const provider = config.python?.provider || "python-lsp-mcp";
 
     if (provider === "pyright-mcp") {
-      // Check for bundled pyright backend
-      const bundledPath = resolveBundledBackend("pyright");
-      if (bundledPath) {
+      // Bundled runtime is opt-in (bundled/auto modes).
+      const bundledPath = runtimeMode !== "registry" ? resolveBundledBackend("pyright") : null;
+      if (bundledPath && runtimeMode !== "registry") {
         console.error(`[Config] Using bundled pyright backend from ${bundledPath}`);
         return {
           enabled: true,
@@ -387,7 +399,7 @@ export function getBackendCommand(
           args: [path.join(bundledPath, "dist", "index.js")],
         };
       }
-      if (requireBundledBackends) {
+      if (runtimeMode === "bundled") {
         throw new Error(
           "Bundled pyright backend not found. Run `bun run build:bundled` in lsp-mcp to produce dist/bundled/pyright."
         );
@@ -402,10 +414,10 @@ export function getBackendCommand(
       };
     } else {
       // python-lsp-mcp
-      
-      // Check for bundled python backend
-      const bundledPath = resolveBundledBackend("python");
-      if (bundledPath) {
+
+      // Bundled runtime is opt-in (bundled/auto modes).
+      const bundledPath = runtimeMode !== "registry" ? resolveBundledBackend("python") : null;
+      if (bundledPath && runtimeMode !== "registry") {
         console.error(`[Config] Using bundled python backend from ${bundledPath}`);
         return {
           enabled: true,
@@ -416,7 +428,7 @@ export function getBackendCommand(
           },
         };
       }
-      if (requireBundledBackends) {
+      if (runtimeMode === "bundled") {
         throw new Error(
           "Bundled python backend not found. Run `bun run build:bundled` in lsp-mcp to produce dist/bundled/python."
         );
@@ -432,9 +444,9 @@ export function getBackendCommand(
       };
     }
   } else if (language === "typescript") {
-    // Check for bundled typescript backend
-    const bundledPath = resolveBundledBackend("typescript");
-    if (bundledPath) {
+    // Bundled runtime is opt-in (bundled/auto modes).
+    const bundledPath = runtimeMode !== "registry" ? resolveBundledBackend("typescript") : null;
+    if (bundledPath && runtimeMode !== "registry") {
       console.error(`[Config] Using bundled typescript backend from ${bundledPath}`);
       return {
         enabled: true,
@@ -442,7 +454,7 @@ export function getBackendCommand(
         args: [path.join(bundledPath, "dist", "index.js")],
       };
     }
-    if (requireBundledBackends) {
+    if (runtimeMode === "bundled") {
       throw new Error(
         "Bundled typescript backend not found. Run `bun run build:bundled` in lsp-mcp to produce dist/bundled/typescript."
       );
@@ -456,9 +468,9 @@ export function getBackendCommand(
         : ["@treedy/typescript-lsp-mcp@latest"],
     };
   } else if (language === "vue") {
-    // Check for bundled vue backend
-    const bundledPath = resolveBundledBackend("vue");
-    if (bundledPath) {
+    // Bundled runtime is opt-in (bundled/auto modes).
+    const bundledPath = runtimeMode !== "registry" ? resolveBundledBackend("vue") : null;
+    if (bundledPath && runtimeMode !== "registry") {
       console.error(`[Config] Using bundled vue backend from ${bundledPath}`);
       return {
         enabled: true,
@@ -466,7 +478,7 @@ export function getBackendCommand(
         args: [path.join(bundledPath, "dist", "index.js")],
       };
     }
-    if (requireBundledBackends) {
+    if (runtimeMode === "bundled") {
       throw new Error(
         "Bundled vue backend not found. Run `bun run build:bundled` in lsp-mcp to produce dist/bundled/vue."
       );

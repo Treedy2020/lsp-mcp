@@ -42,6 +42,16 @@ export type BackendPackageInfo = {
   auto_update_enabled: boolean;
 };
 
+function resolveBackendRuntimeMode(): "registry" | "bundled" | "auto" {
+  const requireBundled = (process.env.LSP_MCP_REQUIRE_BUNDLED_BACKENDS ?? "false").toLowerCase() === "true";
+  if (requireBundled) return "bundled";
+  const runtimeMode = (process.env.LSP_MCP_BACKEND_RUNTIME_MODE || "registry").toLowerCase();
+  if (runtimeMode === "bundled" || runtimeMode === "auto" || runtimeMode === "registry") {
+    return runtimeMode;
+  }
+  return "registry";
+}
+
 export function getBackendPackages(config: Config): BackendPackageInfo[] {
   const pythonProvider = config.python?.provider || "python-lsp-mcp";
   const pythonPackage: Omit<BackendPackageInfo, "language" | "provider" | "default_channel" | "auto_update_enabled"> =
@@ -113,6 +123,7 @@ export async function status(
   const backendStatus = backendManager.getStatus();
   const versions = backendManager.getVersions();
   const backendPackages = getBackendPackages(config);
+  const backendRuntimeMode = resolveBackendRuntimeMode();
 
   const result = {
     server: "lsp-mcp",
@@ -137,6 +148,7 @@ export async function status(
       resolved: workspaces?.resolvedPerLanguage ?? {},
       per_language: workspaces?.resolvedPerLanguage ?? {},
     },
+    backend_runtime_mode: backendRuntimeMode,
     backends: backendStatus,
     versions: versions.map((v) => ({
       language: v.language,
@@ -166,6 +178,7 @@ export async function checkVersions(
 ): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const versions = backendManager.getVersions();
   const backendPackages = getBackendPackages(config);
+  const backendRuntimeMode = resolveBackendRuntimeMode();
 
   const result = {
     server: {
@@ -178,6 +191,7 @@ export async function checkVersions(
         ? "Backends are automatically updated to latest versions on startup"
         : "Auto-update is disabled. Set LSP_MCP_AUTO_UPDATE=true to enable.",
     },
+    backend_runtime_mode: backendRuntimeMode,
     backends: versions.map((v) => ({
       language: v.language,
       serverName: v.serverName,
@@ -270,6 +284,7 @@ export async function listBackends(
 ): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const backendStatus = backendManager.getStatus();
   const backendPackages = getBackendPackages(config);
+  const backendRuntimeMode = resolveBackendRuntimeMode();
   const byLanguage = new Map(backendPackages.map((pkg) => [pkg.language, pkg]));
 
   const backends = [
@@ -307,6 +322,7 @@ export async function listBackends(
   ];
 
   const result = {
+    backend_runtime_mode: backendRuntimeMode,
     backends,
     backend_packages: backendPackages,
     usage: {
