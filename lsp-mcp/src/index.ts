@@ -135,9 +135,7 @@ type BenchmarkReportSnapshot = {
   };
 };
 
-function loadLatestBenchmarkReport(): { found: boolean; path: string; report: BenchmarkReportSnapshot | null; error?: string } {
-  const configured = process.env.LSP_MCP_BENCHMARK_REPORT_PATH || ".tmp/benchmark-latest.json";
-  const reportPath = path.isAbsolute(configured) ? configured : path.resolve(process.cwd(), configured);
+function loadBenchmarkReport(reportPath: string): { found: boolean; path: string; report: BenchmarkReportSnapshot | null; error?: string } {
   if (!fs.existsSync(reportPath)) {
     return { found: false, path: reportPath, report: null };
   }
@@ -150,6 +148,12 @@ function loadLatestBenchmarkReport(): { found: boolean; path: string; report: Be
   } catch (error) {
     return { found: false, path: reportPath, report: null, error: String(error) };
   }
+}
+
+function loadLatestBenchmarkReport(): { found: boolean; path: string; report: BenchmarkReportSnapshot | null; error?: string } {
+  const configured = process.env.LSP_MCP_BENCHMARK_REPORT_PATH || ".tmp/benchmark-latest.json";
+  const reportPath = path.isAbsolute(configured) ? configured : path.resolve(process.cwd(), configured);
+  return loadBenchmarkReport(reportPath);
 }
 
 function resolveBackendRuntimeMode(): "registry" | "bundled" | "auto" {
@@ -663,6 +667,10 @@ const LLM_FEATURE_PROBE_METADATA = {
     expected_latency_ms: { p50: 280, p95: 2200 },
     failure_signatures: ["NOT_IMPLEMENTED", "No call hierarchy available", "LANGUAGE_WORKSPACE_REQUIRED"],
   },
+  type_hierarchy: {
+    expected_latency_ms: { p50: 320, p95: 2600 },
+    failure_signatures: ["NOT_IMPLEMENTED", "NO_SYMBOL_AT_POSITION", "TYPE_HIERARCHY_FALLBACK_ERROR"],
+  },
 } satisfies Record<string, ProbeMetadata>;
 
 const LLM_FEATURE_TARGETS = [
@@ -672,6 +680,7 @@ const LLM_FEATURE_TARGETS = [
   "inlay_hint_resolve",
   "read_file_with_hints",
   "call_hierarchy",
+  "type_hierarchy",
 ] as const;
 
 function fileExistsSafe(p: string): boolean {
@@ -2182,6 +2191,42 @@ server.registerTool(
       }
       const report = latestBenchmark.report;
       const cases = Array.isArray(report.cases) ? report.cases : [];
+      const baselineConfigured = process.env.LSP_MCP_BENCHMARK_BASELINE_PATH || ".tmp/benchmark-baseline.json";
+      const baselinePath = path.isAbsolute(baselineConfigured)
+        ? baselineConfigured
+        : path.resolve(process.cwd(), baselineConfigured);
+      const baseline = loadBenchmarkReport(baselinePath);
+      const baselineCases = baseline.report?.cases || [];
+      const baselineMap = new Map(baselineCases.map((c) => [c.id, c]));
+      const trendPairs = cases
+        .map((curr) => {
+          const prev = baselineMap.get(curr.id);
+          if (!prev || prev.latency_ms <= 0) return null;
+          const deltaMs = curr.latency_ms - prev.latency_ms;
+          const deltaPct = (deltaMs / prev.latency_ms) * 100;
+          return {
+            id: curr.id,
+            tool: curr.tool,
+            current_latency_ms: curr.latency_ms,
+            baseline_latency_ms: prev.latency_ms,
+            delta_ms: deltaMs,
+            delta_pct: Math.round(deltaPct * 10) / 10,
+          };
+        })
+        .filter((v): v is {
+          id: string;
+          tool: string;
+          current_latency_ms: number;
+          baseline_latency_ms: number;
+          delta_ms: number;
+          delta_pct: number;
+        } => !!v);
+      const regressions = trendPairs
+        .filter((p) => p.delta_pct > 20 && p.delta_ms > 50)
+        .sort((a, b) => b.delta_pct - a.delta_pct);
+      const improvements = trendPairs
+        .filter((p) => p.delta_pct < -20 && p.delta_ms < -50)
+        .sort((a, b) => a.delta_pct - b.delta_pct);
       const slowCases = [...cases]
         .filter((c) => typeof c.latency_ms === "number" && c.latency_ms >= 1200)
         .sort((a, b) => b.latency_ms - a.latency_ms)
@@ -2189,7 +2234,9 @@ server.registerTool(
       const errorCases = cases.filter((c) => !c.ok);
       const tokenHeavyCases = cases.filter((c) => c.truncated || c.cursor_available || c.result_size > 400);
       const totalLatency = report.summary?.total_latency_ms ?? cases.reduce((sum, c) => sum + (Number(c.latency_ms) || 0), 0);
-      const budgetStatus = errorCases.length > 0
+      const budgetStatus = regressions.length > 0
+        ? "regressed"
+        : errorCases.length > 0
         ? "degraded"
         : totalLatency > 6000
           ? "high_latency"
@@ -2203,10 +2250,21 @@ server.registerTool(
         error_cases: report.summary?.error_cases ?? errorCases.length,
         total_latency_ms: totalLatency,
         budget_status: budgetStatus,
+        trend: {
+          baseline_found: baseline.found,
+          baseline_path: baseline.path,
+          compared_cases: trendPairs.length,
+          regressions_count: regressions.length,
+          improvements_count: improvements.length,
+          regressions: regressions.slice(0, 5),
+          improvements: improvements.slice(0, 5),
+        },
         slow_cases: slowCases,
         token_heavy_cases: tokenHeavyCases.slice(0, 5),
         recommended_mode: totalLatency > 6000 ? "semantic_navigate(mode='fast')" : "semantic_navigate(mode='deep')",
-        next_step: errorCases.length > 0
+        next_step: regressions.length > 0
+          ? "Benchmark regressed vs baseline; review regressions before changing LLM defaults."
+          : errorCases.length > 0
           ? "Investigate failed benchmark cases before trusting semantic automation."
           : "Use slow_cases and token_heavy_cases to set default mode/strategy for LLM workflows.",
       };
@@ -2623,6 +2681,7 @@ server.registerTool(
       if (feature === "inlay_hint_resolve") return `inlay_hint_resolve(file='${sampleFile}', line=1, column=1)`;
       if (feature === "read_file_with_hints") return `read_file_with_hints(file='${sampleFile}', start_line=1, max_lines=80)`;
       if (feature === "call_hierarchy") return `call_hierarchy(file='${sampleFile}', line=1, column=1, direction='both')`;
+      if (feature === "type_hierarchy") return `type_hierarchy(file='${sampleFile}', line=1, column=1, direction='both')`;
       return `hover(file='${sampleFile}', line=1, column=1)`;
     };
     const featureCapabilityMatrix: Record<string, any> = {};
@@ -2747,7 +2806,9 @@ server.registerTool(
     if (!benchmarkInsights.found) {
       recommendations.push(`Benchmark report not found. ${benchmarkInsights.next_step}`);
     } else {
-      if (benchmarkInsights.budget_status === "degraded") {
+      if (benchmarkInsights.budget_status === "regressed") {
+        recommendations.push("Benchmark trend regressed vs baseline. Review benchmarkInsights.trend.regressions before rollout.");
+      } else if (benchmarkInsights.budget_status === "degraded") {
         recommendations.push("Latest benchmark has failing cases; prioritize fixing those before enabling aggressive semantic automation.");
       } else if (benchmarkInsights.budget_status === "high_latency") {
         recommendations.push("Latest benchmark latency is high; prefer semantic_navigate(mode='fast') and narrower page_size defaults.");
@@ -2925,6 +2986,7 @@ server.registerTool(
       linked_editing_range: "p2_advanced",
       inlay_hint_resolve: "p2_advanced",
       call_hierarchy: "p2_advanced",
+      type_hierarchy: "p2_advanced",
     };
     const selectedFeatures = feature
       ? [feature]
@@ -3376,6 +3438,80 @@ function findWorkspaceIdentifierHits(identifier: string, workspacePath?: string)
     if (hits.length >= 500) break;
   }
   return hits;
+}
+
+function searchWorkspacePatternHits(
+  workspacePath: string | null | undefined,
+  pattern: string,
+  globs: string[],
+  maxHits = 200
+): Array<{ file: string; line: number; column: number; text: string }> {
+  if (!workspacePath || !pattern.trim()) return [];
+  const args = [
+    "--no-ignore-vcs",
+    "--line-number",
+    "--column",
+    "--no-heading",
+    "--color",
+    "never",
+    ...globs.flatMap((g) => ["-g", g]),
+    pattern,
+    ".",
+  ];
+  const result = spawnSync("rg", args, { cwd: workspacePath, encoding: "utf-8" });
+  if (result.error || typeof result.stdout !== "string" || result.stdout.trim().length === 0) return [];
+  const hits: Array<{ file: string; line: number; column: number; text: string }> = [];
+  for (const line of result.stdout.trim().split("\n")) {
+    const match = /^(.*?):(\d+):(\d+):(.*)$/.exec(line);
+    if (!match) continue;
+    hits.push({
+      file: path.resolve(workspacePath, match[1]),
+      line: Number.parseInt(match[2], 10),
+      column: Number.parseInt(match[3], 10),
+      text: match[4],
+    });
+    if (hits.length >= maxHits) break;
+  }
+  return hits;
+}
+
+function parseTypeSupertypesFromLine(language: Language, lineText: string, symbol: string): string[] {
+  const escaped = symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (language === "python") {
+    const m = new RegExp(`^\\s*class\\s+${escaped}\\s*\\(([^)]*)\\)`).exec(lineText);
+    if (!m) return [];
+    return m[1].split(",").map((s) => s.trim()).filter(Boolean);
+  }
+  const classMatch = new RegExp(`\\bclass\\s+${escaped}\\b([^\\{]*)`).exec(lineText);
+  const interfaceMatch = new RegExp(`\\binterface\\s+${escaped}\\b([^\\{]*)`).exec(lineText);
+  const tail = (classMatch?.[1] || interfaceMatch?.[1] || "").trim();
+  if (!tail) return [];
+  const supers: string[] = [];
+  const extendsMatch = /\bextends\s+([A-Za-z0-9_$.,<>\s]+)/.exec(tail);
+  if (extendsMatch?.[1]) {
+    supers.push(...extendsMatch[1].split(",").map((s) => s.replace(/<.*?>/g, "").trim()).filter(Boolean));
+  }
+  const implMatch = /\bimplements\s+([A-Za-z0-9_$.,<>\s]+)/.exec(tail);
+  if (implMatch?.[1]) {
+    supers.push(...implMatch[1].split(",").map((s) => s.replace(/<.*?>/g, "").trim()).filter(Boolean));
+  }
+  return Array.from(new Set(supers));
+}
+
+function toHintPosition1Based(hint: Record<string, unknown>, language: Language): { line: number; column: number } | null {
+  const pos = hint.position as Record<string, unknown> | undefined;
+  if (!pos || typeof pos !== "object") return null;
+  if (typeof pos.line !== "number") return null;
+  if (typeof pos.column === "number") {
+    return { line: pos.line, column: pos.column };
+  }
+  if (typeof pos.character === "number") {
+    return { line: pos.line + 1, column: pos.character + 1 };
+  }
+  if (language === "typescript" && typeof pos.line === "number") {
+    return { line: pos.line, column: 1 };
+  }
+  return null;
 }
 
 function findDeclarationInFile(content: string, identifier: string): { line: number; column: number } | null {
@@ -5056,6 +5192,188 @@ function preRegisterTools(): void {
           const supportsTool = availableTools.some(t => t.name === tool.name);
 
           if (!supportsTool) {
+            if (tool.name === "inlay_hint_resolve" && availableTools.some((t) => t.name === "inlay_hints")) {
+              try {
+                const hintsResponse = await callBackendTool("inlay_hints", { file: filePath });
+                const parsedHints = JSON.parse(hintsResponse.content[0]?.text || "{}");
+                const hints = Array.isArray(parsedHints?.hints) ? parsedHints.hints as Array<Record<string, unknown>> : [];
+                const targetLine = Number((args as Record<string, unknown>).line);
+                const targetColumn = Number((args as Record<string, unknown>).column);
+                const targetLabel = typeof (args as Record<string, unknown>).label === "string"
+                  ? String((args as Record<string, unknown>).label)
+                  : null;
+                const withDistance = hints
+                  .map((hint) => {
+                    const pos = toHintPosition1Based(hint, language);
+                    if (!pos) return null;
+                    const labelRaw = hint.label;
+                    const label = typeof labelRaw === "string"
+                      ? labelRaw
+                      : (Array.isArray(labelRaw) ? labelRaw.map((p) => String((p as Record<string, unknown>).value || "")).join("") : "");
+                    if (targetLabel && label.trim() !== targetLabel.trim()) return null;
+                    const distance = Math.abs(pos.line - targetLine) * 1000 + Math.abs(pos.column - targetColumn);
+                    return { hint, label, pos, distance };
+                  })
+                  .filter((item): item is { hint: Record<string, unknown>; label: string; pos: { line: number; column: number }; distance: number } => !!item)
+                  .sort((a, b) => a.distance - b.distance);
+                const best = withDistance[0];
+                if (!best) {
+                  return withSemanticContext({
+                    content: [{
+                      type: "text",
+                      text: JSON.stringify(withStandardCostFields(withConfidenceFields({
+                        error: "No inlay hint found at this position",
+                        error_code: "NO_INLAY_HINT_FOUND",
+                        strict_mode: true,
+                        fallback_used: true,
+                        approximate: true,
+                        available_hints: hints.length,
+                        next_step: "Call inlay_hints(file=...) to inspect available hint positions, then retry with exact line/column.",
+                        recovery_plan: buildRecoveryPlan(
+                          [`inlay_hints(file='${filePath}')`, `inlay_hint_resolve(file='${filePath}', line=${targetLine}, column=${targetColumn})`],
+                          "Inspect hint positions and retry inlay_hint_resolve with exact coordinates."
+                        ),
+                      }))),
+                    }],
+                  }, tool.name, resolvedWorkspace, backendInstanceId(), language);
+                }
+                return withSemanticContext({
+                  content: [{
+                    type: "text",
+                    text: JSON.stringify(withStandardCostFields(withConfidenceFields({
+                      ok: true,
+                      tool: "inlay_hint_resolve",
+                      strict_mode: true,
+                      fallback_used: true,
+                      approximate: true,
+                      position: best.pos,
+                      label: best.label,
+                      hint: best.hint,
+                      available_hints: hints.length,
+                      next_step: "Use resolved hint label/context for downstream explanation or refactor planning.",
+                    }))),
+                  }],
+                }, tool.name, resolvedWorkspace, backendInstanceId(), language);
+              } catch (error) {
+                return withSemanticContext({
+                  content: [{
+                    type: "text",
+                    text: JSON.stringify(withStandardCostFields(withConfidenceFields({
+                      error: String(error),
+                      error_code: "INLAY_HINT_RESOLVE_FALLBACK_ERROR",
+                      strict_mode: true,
+                      fallback_used: true,
+                      approximate: true,
+                      next_step: "Retry inlay_hint_resolve or call inlay_hints(file=...) directly.",
+                    }))),
+                  }],
+                }, tool.name, resolvedWorkspace, backendInstanceId(), language);
+              }
+            }
+
+            if (tool.name === "type_hierarchy") {
+              try {
+                const direction = String((args as Record<string, unknown>).direction || "both");
+                const sourceText = fs.existsSync(absPath) ? fs.readFileSync(absPath, "utf-8") : "";
+                const symbol = extractIdentifierAtPosition(
+                  sourceText,
+                  Number((args as Record<string, unknown>).line),
+                  Number((args as Record<string, unknown>).column)
+                );
+                if (!symbol) {
+                  return withSemanticContext({
+                    content: [{
+                      type: "text",
+                      text: JSON.stringify(withStandardCostFields(withConfidenceFields({
+                        error: "Unable to infer symbol for type hierarchy fallback",
+                        error_code: "NO_SYMBOL_AT_POSITION",
+                        strict_mode: true,
+                        fallback_used: true,
+                        approximate: true,
+                        next_step: "Move cursor onto a class/interface symbol and retry type_hierarchy.",
+                      }))),
+                    }],
+                  }, tool.name, resolvedWorkspace, backendInstanceId(), language);
+                }
+                const lines = sourceText.split("\n");
+                const targetLine = Number((args as Record<string, unknown>).line);
+                const lineText = lines[Math.max(0, targetLine - 1)] || "";
+                const supertypesRaw = parseTypeSupertypesFromLine(language, lineText, symbol);
+                const supertypes = supertypesRaw.map((name) => ({ name, relation: "supertype" as const }));
+
+                const escaped = symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+                const subtypePatterns = language === "python"
+                  ? [`^\\s*class\\s+[A-Za-z_][A-Za-z0-9_]*\\s*\\([^)]*\\b${escaped}\\b[^)]*\\)`]
+                  : [
+                      `\\bclass\\s+[A-Za-z_$][A-Za-z0-9_$]*\\s+extends\\s+${escaped}\\b`,
+                      `\\b(class|interface)\\s+[A-Za-z_$][A-Za-z0-9_$]*[^\\n\\{]*\\bimplements\\b[^\\n\\{]*\\b${escaped}\\b`,
+                    ];
+                const subtypeGlobs = language === "python"
+                  ? ["*.py"]
+                  : ["*.ts", "*.tsx", "*.js", "*.jsx", "*.vue", "*.d.ts"];
+                const subtypeHits = resolvedWorkspace
+                  ? subtypePatterns.flatMap((p) => searchWorkspacePatternHits(resolvedWorkspace, p, subtypeGlobs, 120))
+                  : [];
+                const seenSubtype = new Set<string>();
+                const subtypes = subtypeHits
+                  .filter((hit) => {
+                    const key = `${hit.file}:${hit.line}:${hit.column}`;
+                    if (seenSubtype.has(key)) return false;
+                    seenSubtype.add(key);
+                    return true;
+                  })
+                  .map((hit) => ({
+                    file: hit.file,
+                    line: hit.line,
+                    column: hit.column,
+                    preview: hit.text.trim(),
+                    relation: "subtype" as const,
+                  }))
+                  .slice(0, 120);
+
+                const includeSuper = direction === "both" || direction === "supertypes";
+                const includeSub = direction === "both" || direction === "subtypes";
+                const filteredSupers = includeSuper ? supertypes : [];
+                const filteredSubs = includeSub ? subtypes : [];
+                return withSemanticContext({
+                  content: [{
+                    type: "text",
+                    text: JSON.stringify(withStandardCostFields(withConfidenceFields({
+                      ok: true,
+                      tool: "type_hierarchy",
+                      strict_mode: true,
+                      fallback_used: true,
+                      approximate: true,
+                      symbol,
+                      direction,
+                      hierarchy: {
+                        supertypes: filteredSupers,
+                        subtypes: filteredSubs,
+                      },
+                      next_step: "Verify approximate hierarchy edges with definition/references before edits.",
+                      result_size: filteredSupers.length + filteredSubs.length,
+                      truncated: subtypes.length > filteredSubs.length,
+                      cursor_available: false,
+                    }))),
+                  }],
+                }, tool.name, resolvedWorkspace, backendInstanceId(), language);
+              } catch (error) {
+                return withSemanticContext({
+                  content: [{
+                    type: "text",
+                    text: JSON.stringify(withStandardCostFields(withConfidenceFields({
+                      error: String(error),
+                      error_code: "TYPE_HIERARCHY_FALLBACK_ERROR",
+                      strict_mode: true,
+                      fallback_used: true,
+                      approximate: true,
+                      next_step: "Retry type_hierarchy or use definition/references manually.",
+                    }))),
+                  }],
+                }, tool.name, resolvedWorkspace, backendInstanceId(), language);
+              }
+            }
+
             return withSemanticContext({
               content: [
                 {

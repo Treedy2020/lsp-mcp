@@ -50,6 +50,7 @@ git_diagnostics
 Use these directly; language is inferred from file/path:
 
 - Navigation: `hover`, `definition`, `implementation`, `type_definition`, `call_hierarchy`, `type_hierarchy`, `document_highlight`, `selection_range`, `folding_range`, `document_link`, `linked_editing_range`, `semantic_tokens`, `moniker`, `references`, `peek_definition`, `workspace_symbol`
+  - `type_hierarchy` and `inlay_hint_resolve` use strict backend methods when available, otherwise return explicit `fallback_used=true` + `approximate=true` results.
 - Hinting: `inlay_hints`, `inlay_hint_resolve`, `read_file_with_hints`
 - Composite semantic workflow: `semantic_navigate` (optional search -> definition -> references -> read_file_with_hints)
   - `mode='deep'` (default) runs full workflow; `mode='fast'` skips heavy hint reads unless explicitly requested
@@ -135,6 +136,7 @@ Strict semantic error shape (example):
 - `doctor` includes `backendVersionSummary` (stable schema with `schema_version`, `counts`, `by_language`, `lookup_stats`) for quick LLM triage.
 - `doctor` includes `workspaceDependencyChecks.python_bundled_runtime` in bundled mode, with optional executable probe results when `probe_backends=true`.
 - `doctor` includes `benchmarkInsights` from the latest benchmark report (`.tmp/benchmark-latest.json` by default) for runtime budget recommendations.
+  - If baseline exists (`.tmp/benchmark-baseline.json` by default), `benchmarkInsights.trend` includes regression/improvement deltas.
 
 Example fields exposed for client/LLM orchestration:
 
@@ -237,12 +239,15 @@ When `LSP_MCP_AUTO_UPDATE=true`:
 - Lean mode (default): backend packages are fetched when first used (`LSP_MCP_BACKEND_RUNTIME_MODE=registry`).
 - Bundled mode: set `LSP_MCP_BACKEND_RUNTIME_MODE=bundled` or `LSP_MCP_REQUIRE_BUNDLED_BACKENDS=true`.
 - Required host tools:
-  - TypeScript/Vue/Pyright backends: `node` + `npx`
-  - Python backend: `uv` (or `uvx`)
+- TypeScript/Vue/Pyright backends: `node` + `npx`
+- Python backend: `uv` (or `uvx`)
 - Vue semantic features additionally require project-local deps in the Vue workspace:
   - `typescript`
   - `@vue/language-server`
 - Use `doctor` to get structured dependency checks and install commands.
+- Optional benchmark paths:
+  - `LSP_MCP_BENCHMARK_REPORT_PATH` (default `.tmp/benchmark-latest.json`)
+  - `LSP_MCP_BENCHMARK_BASELINE_PATH` (default `.tmp/benchmark-baseline.json`)
 
 ## Better Out-of-Box Experience (Recommended)
 

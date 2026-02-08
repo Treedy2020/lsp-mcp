@@ -13,7 +13,12 @@ describe("Diagnostics Delta", () => {
   const tempAbsolutePath = path.join(WORKSPACE_ROOT, tempRelativePath);
 
   beforeAll(async () => {
-    client = new McpTestClient(SERVER_PATH);
+    client = new McpTestClient(SERVER_PATH, {
+      env: {
+        ...process.env,
+        LSP_MCP_SINGLETON_BACKEND: "false",
+      },
+    });
     await client.callTool("switch_workspace_for_language", { language: "typescript", path: WORKSPACE_ROOT });
     fs.writeFileSync(
       tempAbsolutePath,

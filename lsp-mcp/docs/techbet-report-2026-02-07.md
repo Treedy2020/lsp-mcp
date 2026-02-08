@@ -92,6 +92,9 @@
 - [x] Added `semantic_navigate` strategy control (`balanced|definition_first|references_first`) with step-order metadata.
 - [x] Added `diagnostics_delta` per-file aggregation (`file_summary`, `top_hotspots`) for large diagnostics payload triage.
 - [x] Added `doctor.benchmarkInsights` to consume latest benchmark JSON and emit actionable budget recommendations.
+- [x] Added benchmark baseline trend analysis in `doctor.benchmarkInsights.trend` with regression/improvement deltas.
+- [x] Added unified `type_hierarchy` approximate fallback (`fallback_used=true`) when backend method is unavailable.
+- [x] Added unified `inlay_hint_resolve` fallback via `inlay_hints` when backend resolver is unavailable.
 - [x] Added `doctor.capability_snapshot_id` reuse path to avoid repeated capability probing.
 - [x] Added `diagnostics_delta` incremental diagnostics tool to reduce repeated large diagnostics payload reads.
 - [x] Added semantic `confidence` / `confidence_reason` hints for fallback and strict error cases.
@@ -132,7 +135,7 @@ bun test test/integration/meta.test.ts test/integration/vue-strict-semantic.test
 ### P1 - High-value after P0
 
 - [x] `call_hierarchy` (TypeScript implemented end-to-end; Python/Vue pending by backend capability).
-- [~] `type_hierarchy` unified wrapper (strict `NOT_IMPLEMENTED` surfaced; backend implementations pending).
+- [x] `type_hierarchy` unified wrapper (strict backend call when available, approximate fallback otherwise).
 - [x] `code_lens` unified wrapper with compact summaries (TypeScript implemented; Python/Vue pending).
 - [x] `document_highlight` for fast local symbol understanding (TypeScript implemented; Python/Vue pending).
 - [x] `selection_range` and `folding_range` for chunk-level edits (TypeScript implemented; Python/Vue pending).
@@ -143,7 +146,7 @@ bun test test/integration/meta.test.ts test/integration/vue-strict-semantic.test
 - [~] `semantic_tokens` for richer structure-aware reading (TypeScript/Python/Vue wrappers implemented; strict `NOT_IMPLEMENTED` where backend capability is absent).
 - [~] `linked_editing_range` for paired structural edits (TypeScript/Python/Vue wrappers implemented; strict `NOT_IMPLEMENTED` where backend capability is absent).
 - [x] `moniker` for cross-package symbol identity (TypeScript/Python/Vue implemented).
-- [~] `inlay_hint/resolve` optimization path for large files (TypeScript windowed hint span implemented; resolve/pending language parity remains).
+- [x] `inlay_hint/resolve` optimization path for large files (windowed hint spans + unified fallback resolve path across languages).
 
 ### Notes
 

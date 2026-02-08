@@ -119,6 +119,11 @@ describe("Meta Tools", () => {
     expect(typeof result.benchmarkInsights.found).toBe("boolean");
     expect(typeof result.benchmarkInsights.path).toBe("string");
     expect(typeof result.benchmarkInsights.next_step).toBe("string");
+    if (result.benchmarkInsights.found) {
+      expect(result.benchmarkInsights.trend).toBeDefined();
+      expect(typeof result.benchmarkInsights.trend.baseline_found).toBe("boolean");
+      expect(typeof result.benchmarkInsights.trend.compared_cases).toBe("number");
+    }
     expect(result.workspaceDependencyChecks).toBeDefined();
     expect(result.workspaceDependencyChecks.language_workspace_discovery).toBeDefined();
     expect(result.workspaceDependencyChecks.language_command_chains).toBeDefined();
