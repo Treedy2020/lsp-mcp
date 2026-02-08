@@ -86,6 +86,30 @@ type CapabilitySnapshotEntry = {
 const capabilitySnapshotStore = new Map<string, CapabilitySnapshotEntry>();
 const diagnosticsDeltaStore = new Map<string, { updatedAt: number; diagnostics: Array<Record<string, unknown>> }>();
 
+type RecoveryPlanStep = {
+  step: number;
+  action: string;
+  type: "tool_call" | "shell_command";
+  tool: string | null;
+  args: Record<string, unknown> | null;
+  command: string;
+  reason: string;
+};
+
+function resolveLikelyBundledBackendPath(name: string): string | null {
+  const entryFile = process.argv[1] ? path.resolve(process.argv[1]) : null;
+  if (!entryFile) return null;
+  const entryDir = path.dirname(entryFile);
+  const candidates = [
+    path.resolve(entryDir, "bundled", name),
+    path.resolve(entryDir, "..", "dist", "bundled", name),
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return candidates[0] || null;
+}
+
 function resolveBackendRuntimeMode(): "registry" | "bundled" | "auto" {
   const requireBundled = (process.env.LSP_MCP_REQUIRE_BUNDLED_BACKENDS ?? "false").toLowerCase() === "true";
   if (requireBundled) return "bundled";
@@ -218,6 +242,9 @@ function semanticWorkspaceRequiredResponse(language: Language, toolName: string)
   const recoveryPlan = [{
     step: 1,
     action: "set_language_workspace",
+    type: "tool_call" as const,
+    tool: "switch_workspace_for_language",
+    args: { language, path: "/abs/project/root" },
     command: setupCommand,
     reason: "Semantic tools require an explicit per-language workspace mapping.",
   }];
@@ -251,7 +278,73 @@ function semanticWorkspaceRequiredResponse(language: Language, toolName: string)
   };
 }
 
-function buildRecoveryPlan(installCommands: string[], nextStep: string): Array<{ step: number; action: string; command: string; reason: string }> {
+function parseToolLikeCommand(command: string): { tool: string; args: Record<string, unknown> } | null {
+  const trimmed = command.trim();
+  const match = /^([a-z_][a-z0-9_]*)\((.*)\)$/i.exec(trimmed);
+  if (!match) return null;
+  const tool = match[1];
+  const argsRaw = match[2].trim();
+  if (argsRaw.length === 0) return { tool, args: {} };
+
+  const pairs: string[] = [];
+  let current = "";
+  let depth = 0;
+  let quote: "'" | "\"" | null = null;
+  for (const char of argsRaw) {
+    if (quote) {
+      if (char === quote) quote = null;
+      current += char;
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      quote = char;
+      current += char;
+      continue;
+    }
+    if (char === "(") {
+      depth += 1;
+      current += char;
+      continue;
+    }
+    if (char === ")") {
+      depth = Math.max(0, depth - 1);
+      current += char;
+      continue;
+    }
+    if (char === "," && depth === 0) {
+      if (current.trim().length > 0) pairs.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  if (current.trim().length > 0) pairs.push(current.trim());
+
+  const args: Record<string, unknown> = {};
+  for (const pair of pairs) {
+    const idx = pair.indexOf("=");
+    if (idx <= 0) return null;
+    const key = pair.slice(0, idx).trim();
+    const valueRaw = pair.slice(idx + 1).trim();
+    let value: unknown = valueRaw;
+    if (
+      (valueRaw.startsWith("'") && valueRaw.endsWith("'")) ||
+      (valueRaw.startsWith("\"") && valueRaw.endsWith("\""))
+    ) {
+      value = valueRaw.slice(1, -1);
+    } else if (valueRaw === "true" || valueRaw === "false") {
+      value = valueRaw === "true";
+    } else if (/^-?\d+$/.test(valueRaw)) {
+      value = Number.parseInt(valueRaw, 10);
+    } else if (/^-?\d+\.\d+$/.test(valueRaw)) {
+      value = Number.parseFloat(valueRaw);
+    }
+    args[key] = value;
+  }
+  return { tool, args };
+}
+
+function buildRecoveryPlan(installCommands: string[], nextStep: string): RecoveryPlanStep[] {
   const normalized = Array.from(new Set(
     installCommands
       .map((command) => String(command || "").trim())
@@ -260,12 +353,58 @@ function buildRecoveryPlan(installCommands: string[], nextStep: string): Array<{
   if (normalized.length === 0 && nextStep.trim().length > 0) {
     normalized.push(nextStep.trim());
   }
-  return normalized.map((command, idx) => ({
-    step: idx + 1,
-    action: idx === 0 ? "run_next_step" : "retry_with_followup",
-    command,
-    reason: "Follow this command sequence to recover from strict semantic errors.",
-  }));
+  return normalized.map((command, idx) => {
+    const parsed = parseToolLikeCommand(command);
+    return {
+      step: idx + 1,
+      action: idx === 0 ? "run_next_step" : "retry_with_followup",
+      type: parsed ? "tool_call" : "shell_command",
+      tool: parsed?.tool ?? null,
+      args: parsed?.args ?? null,
+      command,
+      reason: "Follow this command sequence to recover from strict semantic errors.",
+    };
+  });
+}
+
+function normalizeRecoveryPlan(
+  value: unknown,
+  installCommands: string[],
+  nextStep: string
+): RecoveryPlanStep[] {
+  if (!Array.isArray(value)) return buildRecoveryPlan(installCommands, nextStep);
+  const out: RecoveryPlanStep[] = [];
+  for (let i = 0; i < value.length; i++) {
+    const raw = value[i];
+    if (!raw || typeof raw !== "object") continue;
+    const rec = raw as Record<string, unknown>;
+    const command = String(rec.command || "").trim();
+    const parsed = command.length > 0 ? parseToolLikeCommand(command) : null;
+    const type = rec.type === "tool_call" || rec.type === "shell_command"
+      ? rec.type
+      : (parsed ? "tool_call" : "shell_command");
+    out.push({
+      step: typeof rec.step === "number" && Number.isFinite(rec.step) ? rec.step : (i + 1),
+      action: typeof rec.action === "string" && rec.action.length > 0
+        ? rec.action
+        : (i === 0 ? "run_next_step" : "retry_with_followup"),
+      type,
+      tool: typeof rec.tool === "string"
+        ? rec.tool
+        : (type === "tool_call" ? (parsed?.tool ?? null) : null),
+      args: rec.args && typeof rec.args === "object" && !Array.isArray(rec.args)
+        ? rec.args as Record<string, unknown>
+        : (type === "tool_call" ? (parsed?.args ?? null) : null),
+      command: command.length > 0
+        ? command
+        : (typeof rec.tool === "string" ? `${String(rec.tool)}(...)` : ""),
+      reason: typeof rec.reason === "string" && rec.reason.length > 0
+        ? rec.reason
+        : "Follow this command sequence to recover from strict semantic errors.",
+    });
+  }
+  if (out.length > 0) return out;
+  return buildRecoveryPlan(installCommands, nextStep);
 }
 
 function inferResponseResultSize(payload: Record<string, unknown>): number {
@@ -334,9 +473,11 @@ function normalizeSemanticErrorPayload(
   const missingPackages = Array.isArray(payload.missing_packages)
     ? payload.missing_packages
     : [];
-  const recoveryPlan = Array.isArray(payload.recovery_plan)
-    ? payload.recovery_plan
-    : buildRecoveryPlan(installCommands.map((cmd) => String(cmd)), nextStep);
+  const recoveryPlan = normalizeRecoveryPlan(
+    payload.recovery_plan,
+    installCommands.map((cmd) => String(cmd)),
+    nextStep
+  );
 
   return withStandardCostFields({
     ...payload,
@@ -1393,7 +1534,7 @@ server.registerTool(
       return {
         content: [{
           type: "text",
-          text: JSON.stringify({
+          text: JSON.stringify(withConfidenceFields(withStandardCostFields({
             error: "UNSUPPORTED_FILE_TYPE",
             error_code: "UNSUPPORTED_FILE_TYPE",
             message: `Cannot infer language for '${file}'.`,
@@ -1401,11 +1542,14 @@ server.registerTool(
             recovery_plan: [{
               step: 1,
               action: "provide_supported_file",
+              type: "tool_call",
+              tool: "semantic_navigate",
+              args: { file: "/abs/path/to/file.ts|.py|.vue", line: 1, column: 1 },
               command: "semantic_navigate(file='/abs/path/to/file.ts|.py|.vue', line=1, column=1)",
               reason: "semantic_navigate requires a resolvable source file.",
             }],
             strict_mode: true,
-          }),
+          }))),
         }],
       };
     }
@@ -1569,9 +1713,57 @@ server.registerTool(
       path: z.string(),
       summary_only: z.boolean().default(false).optional(),
       preview_limit: z.number().int().positive().default(100).optional(),
+      severity: z.enum(["error", "warning", "information", "hint"]).optional(),
+      source: z.string().optional(),
+      page_size: z.number().int().positive().max(500).default(100).optional(),
+      cursor: z.string().optional(),
     },
   },
-  async ({ path: targetPath, summary_only, preview_limit }) => {
+  async ({ path: targetPath, summary_only, preview_limit, severity, source, page_size, cursor }) => {
+    const pageSize = typeof page_size === "number" ? page_size : 100;
+    if (typeof cursor === "string") {
+      const page = readCursorPage("diagnostics_delta", cursor, pageSize);
+      if (!page.ok) {
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(withConfidenceFields(withStandardCostFields({
+              ok: false,
+              tool: "diagnostics_delta",
+              strict_mode: true,
+              error: page.data.error || "INVALID_CURSOR",
+              error_code: "INVALID_CURSOR",
+              next_step: "Call diagnostics_delta(path=...) again without cursor to create a new baseline page.",
+              cursor_available: false,
+              truncated: false,
+              result_size: 0,
+            }))),
+          }],
+        };
+      }
+      const items = Array.isArray(page.data.items) ? page.data.items : [];
+      const summary = page.data.summary || {};
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify(withConfidenceFields(withStandardCostFields({
+            ok: true,
+            tool: "diagnostics_delta",
+            strict_mode: true,
+            page: page.data.page,
+            count: page.data.count ?? items.length,
+            delta: {
+              ...(summary.delta || {}),
+              changes_page: items,
+            },
+            next_step: page.data.page?.has_more
+              ? "Use expand_result(cursor=...) or diagnostics_delta(cursor=...) to continue paged diagnostics changes."
+              : "Call diagnostics_delta again after edits to get new incremental diagnostics changes.",
+          }))),
+        }],
+      };
+    }
+
     const absPath = path.isAbsolute(targetPath)
       ? targetPath
       : (activeWorkspacePath ? path.join(activeWorkspacePath, targetPath) : path.resolve(targetPath));
@@ -1580,7 +1772,7 @@ server.registerTool(
       return {
         content: [{
           type: "text",
-          text: JSON.stringify({
+          text: JSON.stringify(withConfidenceFields(withStandardCostFields({
             error: "UNSUPPORTED_FILE_TYPE",
             error_code: "UNSUPPORTED_FILE_TYPE",
             message: `Cannot infer language for '${targetPath}'.`,
@@ -1589,11 +1781,14 @@ server.registerTool(
             recovery_plan: [{
               step: 1,
               action: "provide_supported_path",
+              type: "tool_call",
+              tool: "diagnostics_delta",
+              args: { path: "/abs/path/to/file.ts|.py|.vue" },
               command: "diagnostics_delta(path='/abs/path/to/file.ts|.py|.vue')",
               reason: "diagnostics_delta needs a language-resolvable file or directory.",
             }],
             ...withStandardCostFields({ result_size: 0, cursor_available: false, truncated: false, latency_ms: null }),
-          }),
+          }))),
         }],
       };
     }
@@ -1653,12 +1848,50 @@ server.registerTool(
         if (!currentByFingerprint.has(fp)) removed.push(diag);
       }
 
+      const levelMap: Record<string, number> = {
+        error: 1,
+        warning: 2,
+        information: 3,
+        hint: 4,
+      };
+      const severityCode = severity ? levelMap[severity] : null;
+      const applyFilters = (diag: Record<string, unknown>): boolean => {
+        if (typeof severityCode === "number" && Number(diag.severity ?? 0) !== severityCode) return false;
+        if (typeof source === "string" && source.trim().length > 0) {
+          const src = String(diag.source ?? "").toLowerCase();
+          if (!src.includes(source.trim().toLowerCase())) return false;
+        }
+        return true;
+      };
+      const filteredAdded = added.filter(applyFilters);
+      const filteredRemoved = removed.filter(applyFilters);
+      const deltaChanges = [
+        ...filteredAdded.map((diag) => ({ kind: "added" as const, diagnostic: diag })),
+        ...filteredRemoved.map((diag) => ({ kind: "removed" as const, diagnostic: diag })),
+      ];
+
       diagnosticsDeltaStore.set(cacheKey, {
         updatedAt: Date.now(),
         diagnostics: diagnostics,
       });
 
       const limit = typeof preview_limit === "number" ? preview_limit : 100;
+      const deltaCursor = deltaChanges.length > limit
+        ? makeCursor("diagnostics_delta", deltaChanges, deltaChanges.length, {
+            delta: {
+              previous_count: previous?.diagnostics.length ?? 0,
+              current_count: diagnostics.length,
+              added_count: filteredAdded.length,
+              removed_count: filteredRemoved.length,
+              baseline_created: !previous,
+              baseline_updated_at: previous?.updatedAt ?? null,
+              filters: {
+                severity: severity ?? null,
+                source: source ?? null,
+              },
+            },
+          })
+        : null;
       const deltaPayload = withConfidenceFields(withStandardCostFields({
         ok: true,
         tool: "diagnostics_delta",
@@ -1670,20 +1903,28 @@ server.registerTool(
         delta: {
           previous_count: previous?.diagnostics.length ?? 0,
           current_count: diagnostics.length,
-          added_count: added.length,
-          removed_count: removed.length,
-          added_preview: added.slice(0, limit),
-          removed_preview: removed.slice(0, limit),
+          added_count: filteredAdded.length,
+          removed_count: filteredRemoved.length,
+          added_preview: filteredAdded.slice(0, limit),
+          removed_preview: filteredRemoved.slice(0, limit),
+          changes_page: deltaChanges.slice(0, limit),
           baseline_created: !previous,
           baseline_updated_at: previous?.updatedAt ?? null,
+          filters: {
+            severity: severity ?? null,
+            source: source ?? null,
+          },
         },
         next_step: "Call diagnostics_delta again after edits to get incremental diagnostics changes.",
         fallback_used: false,
         approximate: false,
         latency_ms: Date.now() - startedAt,
         result_size: diagnostics.length,
-        cursor_available: false,
-        truncated: added.length > limit || removed.length > limit,
+        cursor_available: !!deltaCursor,
+        truncated: deltaChanges.length > limit,
+        next: deltaCursor
+          ? { tool: "diagnostics_delta", arguments: { cursor: deltaCursor, page_size: pageSize } }
+          : null,
       }));
       return { content: [{ type: "text", text: JSON.stringify(deltaPayload) }] };
     } catch (error) {
@@ -2010,6 +2251,45 @@ server.registerTool(
       uv_cache_dir: uvCacheDir,
       uv_cache_writable: uvCacheWritable,
     };
+    if (config.languages.python?.enabled && backendRuntimeMode === "bundled") {
+      const pythonBundledDir = resolveLikelyBundledBackendPath("python");
+      const bundledExists = !!pythonBundledDir && fs.existsSync(pythonBundledDir);
+      const bundledRuntimeCheck: Record<string, unknown> = {
+        runtime_mode: backendRuntimeMode,
+        bundled_dir: pythonBundledDir,
+        bundled_dir_exists: bundledExists,
+        uv_available: checks.uv.available,
+        probe_executed: false,
+      };
+      if (!bundledExists) {
+        bundledRuntimeCheck.status = "missing_bundle";
+        bundledRuntimeCheck.next_step = "Run `bun run build:bundled` to produce `dist/bundled/python`.";
+      } else if (!checks.uv.available) {
+        bundledRuntimeCheck.status = "missing_uv";
+        bundledRuntimeCheck.next_step = "Install uv and ensure `uv` is available in PATH.";
+      } else if (probe_backends) {
+        const probe = await runCommandCapture(
+          "uv",
+          ["run", "--quiet", "--directory", pythonBundledDir!, "python-lsp-mcp", "--help"],
+          8000
+        );
+        bundledRuntimeCheck.probe_executed = true;
+        bundledRuntimeCheck.probe_command = `uv run --quiet --directory ${pythonBundledDir} python-lsp-mcp --help`;
+        bundledRuntimeCheck.probe_exit_code = probe.code;
+        bundledRuntimeCheck.probe_output = (probe.stdout || probe.stderr || "").trim().slice(0, 500);
+        if (probe.code === 0) {
+          bundledRuntimeCheck.status = "ok";
+          bundledRuntimeCheck.next_step = "Bundled python runtime probe succeeded.";
+        } else {
+          bundledRuntimeCheck.status = "probe_failed";
+          bundledRuntimeCheck.next_step = "Run the probe command manually to inspect full error and ensure UV cache/network access.";
+        }
+      } else {
+        bundledRuntimeCheck.status = "probe_skipped";
+        bundledRuntimeCheck.next_step = "Run doctor(probe_backends=true) to execute bundled python runtime probe.";
+      }
+      workspaceDependencyChecks.python_bundled_runtime = bundledRuntimeCheck;
+    }
 
     const discoveryRoot = activeWorkspacePath;
     if (discoveryRoot && fileExistsSafe(discoveryRoot) && fs.statSync(discoveryRoot).isDirectory()) {
@@ -2296,6 +2576,21 @@ server.registerTool(
       const pythonProbeError = String(probeResults.python?.error || "");
       if (pythonProbeError.includes("Connection closed") || pythonProbeError.includes("MCP error -32000")) {
         recommendations.push("Python backend failed before handshake. Run `uv run --directory dist/bundled/python python-lsp-mcp --help` to preinstall runtime dependencies.");
+      }
+    }
+    const pythonBundledRuntimeCheck = workspaceDependencyChecks.python_bundled_runtime as
+      | { status?: string; next_step?: string; probe_command?: string }
+      | undefined;
+    if (pythonBundledRuntimeCheck) {
+      if (pythonBundledRuntimeCheck.status === "missing_bundle") {
+        recommendations.push(String(pythonBundledRuntimeCheck.next_step || "Bundled python runtime missing."));
+      } else if (pythonBundledRuntimeCheck.status === "missing_uv") {
+        recommendations.push(String(pythonBundledRuntimeCheck.next_step || "uv is required for bundled python runtime."));
+      } else if (pythonBundledRuntimeCheck.status === "probe_failed") {
+        recommendations.push("Bundled python runtime probe failed. Check uv cache/network, then retry doctor(probe_backends=true).");
+        if (pythonBundledRuntimeCheck.probe_command) {
+          recommendations.push(`Probe command: ${pythonBundledRuntimeCheck.probe_command}`);
+        }
       }
     }
     if (capabilitySnapshotStatus === "invalid_or_expired") {

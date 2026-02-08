@@ -118,6 +118,16 @@ describe("Meta Tools", () => {
     expect(result.workspaceDependencyChecks).toBeDefined();
     expect(result.workspaceDependencyChecks.language_workspace_discovery).toBeDefined();
     expect(result.workspaceDependencyChecks.language_command_chains).toBeDefined();
+    if (result.backendRuntimeMode === "bundled" && result.enabledLanguages.includes("python")) {
+      expect(result.workspaceDependencyChecks.python_bundled_runtime).toBeDefined();
+      expect([
+        "ok",
+        "probe_skipped",
+        "probe_failed",
+        "missing_bundle",
+        "missing_uv",
+      ]).toContain(result.workspaceDependencyChecks.python_bundled_runtime.status);
+    }
     expect(result.languageCommandChains).toBeDefined();
     expect(result.languageCommandChains.typescript).toBeDefined();
     expect(Array.isArray(result.languageCommandChains.typescript.commands)).toBe(true);
@@ -143,6 +153,10 @@ describe("Meta Tools", () => {
     expect(["supported", "not_supported"]).toContain(result.featureCapabilityMatrix.python.features.semantic_tokens);
     expect(typeof result.capability_snapshot_id).toBe("string");
     expect(["created", "reused", "none"]).toContain(result.capability_snapshot_status);
+    if (result.backendRuntimeMode === "bundled" && result.enabledLanguages.includes("python")) {
+      expect(result.workspaceDependencyChecks.python_bundled_runtime).toBeDefined();
+      expect(result.workspaceDependencyChecks.python_bundled_runtime.probe_executed).toBe(true);
+    }
   }, 15000);
 
   it("should reuse capability snapshot to avoid reprobe", async () => {

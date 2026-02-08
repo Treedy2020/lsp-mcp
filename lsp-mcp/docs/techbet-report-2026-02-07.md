@@ -91,16 +91,22 @@
 - [x] Added `doctor.capability_snapshot_id` reuse path to avoid repeated capability probing.
 - [x] Added `diagnostics_delta` incremental diagnostics tool to reduce repeated large diagnostics payload reads.
 - [x] Added semantic `confidence` / `confidence_reason` hints for fallback and strict error cases.
+- [x] Structured strict `recovery_plan[]` with executable `type/tool/args` fields for direct LLM tool-calling.
+- [x] Added doctor bundled Python runtime probe (`workspaceDependencyChecks.python_bundled_runtime`) for handshake failure triage.
 
 ### P2
-- [ ] Add automated extraction of per-test latency into machine-readable artifacts (JSON).
-- [ ] Add trend comparison against previous benchmark reports (pass rate and latency deltas).
+- [x] Added `scripts/benchmark-report.ts` to emit machine-readable benchmark JSON with per-case latency/cost fields.
+- [x] Added baseline trend comparison (`--baseline`) and regression gate (`--fail-on-regression`) in benchmark report script.
 
 ## Suggested Next Commands
 
 ```bash
 # Full benchmark matrix
 bun run test:benchmark
+
+# Machine-readable benchmark report + trend diff
+bun run benchmark:report
+bun run scripts/benchmark-report.ts --out .tmp/benchmark-latest.json --baseline .tmp/benchmark-baseline.json
 
 # Mixed-root-only quick verification
 bun test test/integration/mixed-root-benchmark-matrix.test.ts

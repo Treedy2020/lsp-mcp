@@ -66,10 +66,11 @@ For large repos, use preview arguments to reduce token usage:
 
 - `search` / `workspace_symbol`: `preview_limit` or `page_size` (default `200`), plus `cursor` for next page
 - `diagnostics`: `preview_limit` or `page_size` (default `200`), `summary_only` (default `false`), plus `cursor`
+- `diagnostics_delta`: `preview_limit`/`page_size` plus optional `severity` and `source` filters, and `cursor` for paged change items
 - `doctor`: `page_size` (default `50`) plus `cursor` for long environment reports
 - `doctor`: set `check_latest_versions=true` to probe registry latest version drift (slower, network-dependent)
 - `doctor`: use `capability_snapshot_id` to reuse probed capability matrix and skip repeated backend capability probing
-- Strict semantic errors include `recovery_plan` and standard cost fields: `latency_ms`, `result_size`, `truncated`, `cursor_available`
+- Strict semantic errors include structured `recovery_plan[]` (`type`, `tool`, `args`, `command`) and cost fields: `latency_ms`, `result_size`, `truncated`, `cursor_available`
 - Semantic responses include `confidence` and `confidence_reason` for fallback/approximation awareness
 - `project_structure`: `max_depth` (default `3`), `max_entries` (default `300`)
 - `summarize_file`: `max_symbols` (default `200`)
@@ -80,6 +81,40 @@ Paged responses include:
 - `page`: `{ shown, offset, page_size, has_more, next_cursor }`
 - `next`: ready-to-call arguments for the next page (via `expand_result`)
 - Cursors are signed and expire automatically (TTL-based) for safer paging.
+
+Strict semantic error shape (example):
+
+```json
+{
+  "error": "LANGUAGE_WORKSPACE_REQUIRED",
+  "error_code": "LANGUAGE_WORKSPACE_REQUIRED",
+  "tool": "hover",
+  "strict_mode": true,
+  "resolved_language": "typescript",
+  "resolved_workspace": null,
+  "next_step": "Call switch_workspace_for_language(language='typescript', path='/abs/project/root') before using semantic tools.",
+  "recovery_plan": [
+    {
+      "step": 1,
+      "action": "set_language_workspace",
+      "type": "tool_call",
+      "tool": "switch_workspace_for_language",
+      "args": {
+        "language": "typescript",
+        "path": "/abs/project/root"
+      },
+      "command": "switch_workspace_for_language(language='typescript', path='/abs/project/root')",
+      "reason": "Semantic tools require an explicit per-language workspace mapping."
+    }
+  ],
+  "latency_ms": null,
+  "result_size": 0,
+  "cursor_available": false,
+  "truncated": false,
+  "confidence": 0.25,
+  "confidence_reason": "Strict workspace precondition failed; no semantic result available."
+}
+```
 
 ### Language-specific tools
 
@@ -95,6 +130,7 @@ Paged responses include:
 - `doctor` now includes `workspaceDependencyChecks.language_workspace_discovery` with suggested per-language workspace commands.
 - `doctor` includes `backendPackageDrift` to show installed backend version vs latest policy and upgrade next steps.
 - `doctor` includes `backendVersionSummary` (stable schema with `schema_version`, `counts`, `by_language`, `lookup_stats`) for quick LLM triage.
+- `doctor` includes `workspaceDependencyChecks.python_bundled_runtime` in bundled mode, with optional executable probe results when `probe_backends=true`.
 
 Example fields exposed for client/LLM orchestration:
 
@@ -217,6 +253,11 @@ When `LSP_MCP_AUTO_UPDATE=true`:
 ```bash
 # Install deps
 bun install
+
+# Machine-readable benchmark report
+bun run benchmark:report
+# Optional trend diff (compare with .tmp/benchmark-baseline.json)
+bun run benchmark:diff
 
 # Build local dist/ (lean default, no bundled backends)
 bun run build
