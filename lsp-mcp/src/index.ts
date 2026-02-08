@@ -2269,6 +2269,60 @@ server.registerTool(
           : "Use slow_cases and token_heavy_cases to set default mode/strategy for LLM workflows.",
       };
     })();
+    const llmSemanticDefaults = (() => {
+      const found = !!benchmarkInsights.found;
+      const budget = String(benchmarkInsights.budget_status || "unknown");
+      const tokenHeavyCount = Array.isArray(benchmarkInsights.token_heavy_cases)
+        ? benchmarkInsights.token_heavy_cases.length
+        : 0;
+      const slowCaseIds = new Set(
+        Array.isArray(benchmarkInsights.slow_cases)
+          ? benchmarkInsights.slow_cases.map((c: any) => String(c.id || ""))
+          : []
+      );
+      const mode: "fast" | "deep" =
+        budget === "high_latency" || budget === "degraded" || budget === "regressed"
+          ? "fast"
+          : "deep";
+      const strategy: "balanced" | "definition_first" | "references_first" =
+        slowCaseIds.has("semantic_navigate_references_first_fast")
+          ? "definition_first"
+          : slowCaseIds.has("semantic_navigate_definition_first_fast")
+            ? "references_first"
+            : "balanced";
+      const pageSize = mode === "fast" || tokenHeavyCount > 0 ? 20 : 50;
+      const referencePreview = mode === "fast" ? 10 : 20;
+      const hintMaxLines = mode === "fast" ? 60 : 120;
+      const diagnosticsPageSize = mode === "fast" ? 50 : 100;
+      const diagnosticsPreviewLimit = mode === "fast" ? 50 : 100;
+      const diagnosticsHotspotLimit = mode === "fast" ? 5 : 10;
+      const rationale: string[] = [];
+      if (!found) rationale.push("No benchmark report found; using conservative defaults.");
+      if (budget === "regressed") rationale.push("Regression vs baseline detected; prioritize faster/safer navigation settings.");
+      if (budget === "degraded") rationale.push("Benchmark has failing cases; reduce semantic payload until errors are resolved.");
+      if (budget === "high_latency") rationale.push("High latency detected; prefer fast mode and smaller pages.");
+      if (tokenHeavyCount > 0) rationale.push("Token-heavy benchmark cases detected; cap page sizes and preview windows.");
+      if (rationale.length === 0) rationale.push("Benchmark health is acceptable; use balanced deep defaults.");
+      return {
+        version: 1,
+        source: found ? "doctor.benchmarkInsights" : "default_policy",
+        budget_status: budget,
+        semantic_navigate: {
+          mode,
+          strategy,
+          page_size: pageSize,
+          reference_preview: referencePreview,
+          hint_start_line: 1,
+          hint_max_lines: hintMaxLines,
+        },
+        diagnostics_delta: {
+          page_size: diagnosticsPageSize,
+          preview_limit: diagnosticsPreviewLimit,
+          hotspot_limit: diagnosticsHotspotLimit,
+        },
+        rationale,
+      };
+    })();
 
     const backendPackages = getBackendPackages(config).filter((pkg) => config.languages[pkg.language]?.enabled);
     const backendRuntimeMode = resolveBackendRuntimeMode();
@@ -2891,6 +2945,7 @@ server.registerTool(
       backendPackageDrift,
       backendVersionSummary,
       benchmarkInsights,
+      llmSemanticDefaults,
       workspaceDependencyChecks,
       languageCommandChains,
       backendCommands,
@@ -2906,6 +2961,7 @@ server.registerTool(
       items.push({ kind: "runtime_check", key: name, value: check });
     }
     items.push({ kind: "benchmark_insight", key: "latest", value: benchmarkInsights });
+    items.push({ kind: "llm_default", key: "semantic_defaults", value: llmSemanticDefaults });
     for (const [name, depCheck] of Object.entries(workspaceDependencyChecks)) {
       items.push({ kind: "workspace_dependency", key: name, value: depCheck });
     }
@@ -2940,6 +2996,7 @@ server.registerTool(
       backend_version_counts: backendVersionSummary.counts,
       benchmark_found: !!benchmarkInsights.found,
       benchmark_budget_status: benchmarkInsights.budget_status || "unknown",
+      llm_defaults_version: llmSemanticDefaults.version,
       item_count: items.length,
     };
     const doctorCursor = makeCursor("doctor", items, items.length, doctorSummary);

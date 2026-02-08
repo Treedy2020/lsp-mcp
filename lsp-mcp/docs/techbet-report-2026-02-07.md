@@ -95,6 +95,7 @@
 - [x] Added benchmark baseline trend analysis in `doctor.benchmarkInsights.trend` with regression/improvement deltas.
 - [x] Added unified `type_hierarchy` approximate fallback (`fallback_used=true`) when backend method is unavailable.
 - [x] Added unified `inlay_hint_resolve` fallback via `inlay_hints` when backend resolver is unavailable.
+- [x] Added `doctor.llmSemanticDefaults` auto-parameter recommendations for `semantic_navigate` and `diagnostics_delta`.
 - [x] Added `doctor.capability_snapshot_id` reuse path to avoid repeated capability probing.
 - [x] Added `diagnostics_delta` incremental diagnostics tool to reduce repeated large diagnostics payload reads.
 - [x] Added semantic `confidence` / `confidence_reason` hints for fallback and strict error cases.

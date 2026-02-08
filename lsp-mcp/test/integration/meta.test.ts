@@ -124,6 +124,15 @@ describe("Meta Tools", () => {
       expect(typeof result.benchmarkInsights.trend.baseline_found).toBe("boolean");
       expect(typeof result.benchmarkInsights.trend.compared_cases).toBe("number");
     }
+    expect(result.llmSemanticDefaults).toBeDefined();
+    expect(result.llmSemanticDefaults.version).toBe(1);
+    expect(["fast", "deep"]).toContain(result.llmSemanticDefaults.semantic_navigate.mode);
+    expect(["balanced", "definition_first", "references_first"]).toContain(
+      result.llmSemanticDefaults.semantic_navigate.strategy
+    );
+    expect(typeof result.llmSemanticDefaults.semantic_navigate.page_size).toBe("number");
+    expect(typeof result.llmSemanticDefaults.diagnostics_delta.preview_limit).toBe("number");
+    expect(Array.isArray(result.llmSemanticDefaults.rationale)).toBe(true);
     expect(result.workspaceDependencyChecks).toBeDefined();
     expect(result.workspaceDependencyChecks.language_workspace_discovery).toBeDefined();
     expect(result.workspaceDependencyChecks.language_command_chains).toBeDefined();

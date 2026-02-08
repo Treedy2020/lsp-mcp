@@ -137,6 +137,10 @@ Strict semantic error shape (example):
 - `doctor` includes `workspaceDependencyChecks.python_bundled_runtime` in bundled mode, with optional executable probe results when `probe_backends=true`.
 - `doctor` includes `benchmarkInsights` from the latest benchmark report (`.tmp/benchmark-latest.json` by default) for runtime budget recommendations.
   - If baseline exists (`.tmp/benchmark-baseline.json` by default), `benchmarkInsights.trend` includes regression/improvement deltas.
+- `doctor` includes `llmSemanticDefaults` with ready-to-use parameter presets for:
+  - `semantic_navigate` (`mode`, `strategy`, `page_size`, `reference_preview`, `hint_max_lines`)
+  - `diagnostics_delta` (`page_size`, `preview_limit`, `hotspot_limit`)
+  - plus `rationale[]` explaining why these defaults were chosen
 
 Example fields exposed for client/LLM orchestration:
 
