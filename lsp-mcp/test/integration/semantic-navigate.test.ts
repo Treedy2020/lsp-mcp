@@ -42,4 +42,21 @@ describe("Semantic Navigate", () => {
     expect(typeof result.confidence).toBe("number");
     expect(typeof result.confidence_reason).toBe("string");
   }, 60000);
+
+  it("should support fast mode with lighter workflow", async () => {
+    const result = await client.callTool("semantic_navigate", {
+      file: "packages/zod/src/v4/core/util.ts",
+      line: 218,
+      column: 25,
+      mode: "fast",
+      reference_preview: 5,
+    });
+
+    expect(result.tool).toBe("semantic_navigate");
+    expect(result.mode).toBe("fast");
+    expect(result.summary?.mode).toBe("fast");
+    expect(result.steps?.definition).toBeDefined();
+    expect(result.steps?.references).toBeDefined();
+    expect(result.steps?.read_file_with_hints?.status).toBe("skipped");
+  }, 60000);
 });

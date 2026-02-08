@@ -1517,6 +1517,7 @@ server.registerTool(
       file: z.string(),
       line: z.number().int().positive(),
       column: z.number().int().positive(),
+      mode: z.enum(["fast", "deep"]).default("deep").optional(),
       query: z.string().optional(),
       page_size: z.number().int().positive().max(200).default(20).optional(),
       hint_start_line: z.number().int().positive().default(1).optional(),
@@ -1524,8 +1525,9 @@ server.registerTool(
       reference_preview: z.number().int().positive().max(200).default(20).optional(),
     },
   },
-  async ({ file, line, column, query, page_size, hint_start_line, hint_max_lines, reference_preview }) => {
+  async ({ file, line, column, mode, query, page_size, hint_start_line, hint_max_lines, reference_preview }) => {
     const startedAt = Date.now();
+    const navigateMode: "fast" | "deep" = mode === "fast" ? "fast" : "deep";
     const absFile = path.isAbsolute(file)
       ? file
       : (activeWorkspacePath ? path.join(activeWorkspacePath, file) : path.resolve(file));
@@ -1654,13 +1656,23 @@ server.registerTool(
       file: absFile,
       line,
       column,
-      page_size: typeof reference_preview === "number" ? reference_preview : 20,
+      page_size: typeof reference_preview === "number" ? reference_preview : (navigateMode === "fast" ? 10 : 20),
     });
-    const hintsRes = await runStep("read_file_with_hints", "read_file_with_hints", {
-      file: absFile,
-      start_line: typeof hint_start_line === "number" ? hint_start_line : 1,
-      max_lines: typeof hint_max_lines === "number" ? hint_max_lines : 120,
-    });
+    let hintsRes: { ok: boolean; payload: Record<string, unknown> } = { ok: false, payload: {} };
+    const runHints = navigateMode === "deep" || typeof hint_start_line === "number" || typeof hint_max_lines === "number";
+    if (runHints) {
+      hintsRes = await runStep("read_file_with_hints", "read_file_with_hints", {
+        file: absFile,
+        start_line: typeof hint_start_line === "number" ? hint_start_line : 1,
+        max_lines: typeof hint_max_lines === "number" ? hint_max_lines : 120,
+      });
+    } else {
+      workflowSteps.read_file_with_hints = {
+        status: "skipped",
+        tool: "read_file_with_hints",
+        reason: "Skipped in fast mode to reduce payload and latency.",
+      };
+    }
 
     const referencesPayload = referencesRes.payload && typeof referencesRes.payload === "object" ? referencesRes.payload : {};
     const referenceItems = extractReferencesItems(referencesPayload);
@@ -1668,7 +1680,11 @@ server.registerTool(
 
     const ok = Boolean(definitionRes.ok || referencesRes.ok || hintsRes.ok);
     const nextStep = ok
-      ? "Continue with code_action/rename based on references and hints."
+      ? (
+        navigateMode === "fast"
+          ? "For richer context, rerun semantic_navigate(mode='deep', ...) before refactors."
+          : "Continue with code_action/rename based on references and hints."
+      )
       : `Retry semantic_navigate after running doctor(probe_backends=true) and checking workspace/dependencies for '${language}'.`;
     const recoveryPlan = ok
       ? []
@@ -1680,6 +1696,7 @@ server.registerTool(
       ok,
       tool: "semantic_navigate",
       strict_mode: true,
+      mode: navigateMode,
       file: absFile,
       position: { line, column },
       resolved_language: language,
@@ -1687,6 +1704,7 @@ server.registerTool(
       backend_instance_id: backendInstanceId,
       steps: workflowSteps,
       summary: {
+        mode: navigateMode,
         references_count: referenceCount,
         definition_ok: definitionRes.ok,
         references_ok: referencesRes.ok,

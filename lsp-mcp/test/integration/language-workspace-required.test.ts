@@ -45,6 +45,10 @@ describe("Language Workspace Requirement", () => {
     expect(result.backend_instance_id).toBeNull();
     expect(Array.isArray(result.recovery_plan)).toBe(true);
     expect(String(result.recovery_plan?.[0]?.command || "")).toContain("switch_workspace_for_language");
+    expect(result.recovery_plan?.[0]?.type).toBe("tool_call");
+    expect(result.recovery_plan?.[0]?.tool).toBe("switch_workspace_for_language");
+    expect(result.recovery_plan?.[0]?.args?.language).toBe("typescript");
+    expect(typeof result.recovery_plan?.[0]?.args?.path).toBe("string");
     expect(typeof result.result_size).toBe("number");
     expect(typeof result.cursor_available).toBe("boolean");
     expect(typeof result.truncated).toBe("boolean");
