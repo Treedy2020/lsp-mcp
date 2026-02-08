@@ -19,7 +19,7 @@ import { createRequire } from "module";
 import * as fs from "fs";
 import * as path from "path";
 import * as net from "net";
-import { execSync, spawnSync } from "child_process";
+import { execSync, spawn, spawnSync } from "child_process";
 import { createHash, randomBytes } from "crypto";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 
@@ -71,6 +71,10 @@ const BACKEND_LOCK_DIR = process.env.LSP_MCP_BACKEND_LOCK_DIR || path.join("/tmp
 let singletonRpcServer: net.Server | null = null;
 let singletonRpcEndpoint: { host: string; port: number } | null = null;
 let singletonRpcStarting = false;
+const REGISTRY_LOOKUP_TTL_MS = Number.parseInt(process.env.LSP_MCP_REGISTRY_LOOKUP_TTL_MS || "300000", 10);
+type RegistryLookupResult = { latest_version: string | null; source: "npm" | "pypi" | "unknown"; error?: string };
+const registryLatestCache = new Map<string, { value: RegistryLookupResult; expiresAt: number }>();
+const registryLatestInflight = new Map<string, Promise<RegistryLookupResult>>();
 
 function resolveBackendRuntimeMode(): "registry" | "bundled" | "auto" {
   const requireBundled = (process.env.LSP_MCP_REQUIRE_BUNDLED_BACKENDS ?? "false").toLowerCase() === "true";
@@ -78,6 +82,31 @@ function resolveBackendRuntimeMode(): "registry" | "bundled" | "auto" {
   const mode = (process.env.LSP_MCP_BACKEND_RUNTIME_MODE || "registry").toLowerCase();
   if (mode === "registry" || mode === "bundled" || mode === "auto") return mode;
   return "registry";
+}
+
+async function runCommandCapture(command: string, args: string[], timeoutMs = 5000): Promise<{ code: number; stdout: string; stderr: string }> {
+  return await new Promise((resolve) => {
+    const child = spawn(command, args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: process.env,
+    });
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      try { child.kill("SIGKILL"); } catch {}
+      resolve({ code: -1, stdout, stderr: `${stderr}\ncommand timeout`.trim() });
+    }, timeoutMs);
+    child.stdout?.on("data", (chunk) => { stdout += String(chunk); });
+    child.stderr?.on("data", (chunk) => { stderr += String(chunk); });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      resolve({ code: -1, stdout, stderr: String(error) });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({ code: typeof code === "number" ? code : -1, stdout, stderr });
+    });
+  });
 }
 
 function getWorkspaceForLanguage(language: Language): string | null {
@@ -1280,32 +1309,43 @@ server.registerTool(
       }
       return 0;
     };
-    const fetchLatestRegistryVersion = (
+    const fetchLatestRegistryVersion = async (
       pkg: { package: string; registry: "npm" | "pypi"; resolver: "npx" | "uvx" }
-    ): { latest_version: string | null; source: "npm" | "pypi" | "unknown"; error?: string } => {
+    ): Promise<RegistryLookupResult> => {
       if (!check_latest_versions) {
         return { latest_version: null, source: "unknown", error: "latest check disabled (set check_latest_versions=true)" };
       }
-      if (pkg.registry === "npm") {
-        if (!checks.npm.available) {
-          return { latest_version: null, source: "npm", error: "npm not available" };
+      const cacheKey = `${pkg.registry}:${pkg.package}`;
+      const now = Date.now();
+      const cached = registryLatestCache.get(cacheKey);
+      if (cached && cached.expiresAt > now) return cached.value;
+      const inflight = registryLatestInflight.get(cacheKey);
+      if (inflight) return await inflight;
+      const lookup = (async (): Promise<RegistryLookupResult> => {
+        if (pkg.registry === "npm") {
+          if (!checks.npm.available) {
+            return { latest_version: null, source: "npm", error: "npm not available" };
+          }
+          const out = await runCommandCapture("npm", ["view", pkg.package, "version"], 5000);
+          if (out.code !== 0) {
+            return { latest_version: null, source: "npm", error: (out.stderr || out.stdout || "npm view failed").trim() };
+          }
+          const latest = String(out.stdout || "").trim().split("\n")[0] || null;
+          return { latest_version: parseSemver(latest), source: "npm", error: latest ? undefined : "empty version response" };
         }
-        const out = spawnSync("npm", ["view", pkg.package, "version"], {
-          encoding: "utf-8",
-          timeout: 5000,
-          stdio: ["ignore", "pipe", "pipe"],
-        });
-        if (out.status !== 0) {
-          return { latest_version: null, source: "npm", error: (out.stderr || out.stdout || "npm view failed").trim() };
-        }
-        const latest = String(out.stdout || "").trim().split("\n")[0] || null;
-        return { latest_version: parseSemver(latest), source: "npm", error: latest ? undefined : "empty version response" };
+        return { latest_version: null, source: "pypi", error: "pypi latest lookup not implemented" };
+      })();
+      registryLatestInflight.set(cacheKey, lookup);
+      try {
+        const value = await lookup;
+        registryLatestCache.set(cacheKey, { value, expiresAt: now + REGISTRY_LOOKUP_TTL_MS });
+        return value;
+      } finally {
+        registryLatestInflight.delete(cacheKey);
       }
-      // PyPI latest lookup is intentionally best-effort and currently deferred.
-      return { latest_version: null, source: "pypi", error: "pypi latest lookup not implemented" };
     };
-    const backendPackageDrift = Object.fromEntries(
-      backendPackages.map((pkg) => {
+    const backendPackageDriftEntries = await Promise.all(
+      backendPackages.map(async (pkg) => {
         const versionInfo = versionByLanguage.get(pkg.language);
         const backendStatus = versionInfo?.status ?? "not_started";
         const command = versionInfo?.command ?? "not configured";
@@ -1314,9 +1354,10 @@ server.registerTool(
         const usingLatestPolicy = pkg.registry === "npm"
           ? command.includes("@latest")
           : command.includes("--upgrade");
-        const latestRegistry = fetchLatestRegistryVersion(pkg);
+        const latestRegistry = await fetchLatestRegistryVersion(pkg);
         const installedSemver = parseSemver(installedVersion);
         const latestSemver = parseSemver(latestRegistry.latest_version);
+        const minimumSupportedSemver = parseSemver(pkg.minimum_supported_version);
 
         let driftStatus: "unknown_not_started" | "bundled_static" | "policy_aligned" | "policy_drift" = "unknown_not_started";
         if (backendStatus === "ready" || backendStatus === "error") {
@@ -1336,6 +1377,14 @@ server.registerTool(
                 : compareSemver(installedSemver, latestSemver) >= 0
                   ? "up_to_date"
                   : "outdated";
+        const minimumStatus: "supported" | "below_minimum" | "unknown_not_started" | "unknown_parse_failed" =
+          backendStatus !== "ready" && backendStatus !== "error"
+            ? "unknown_not_started"
+            : !installedSemver || !minimumSupportedSemver
+              ? "unknown_parse_failed"
+              : compareSemver(installedSemver, minimumSupportedSemver) >= 0
+                ? "supported"
+                : "below_minimum";
 
         const nextStep = driftStatus === "policy_aligned"
           ? "No action needed."
@@ -1370,6 +1419,8 @@ server.registerTool(
           latest_registry_source: latestRegistry.source,
           latest_lookup_error: latestRegistry.error || null,
           installed_semver: installedSemver,
+          minimum_supported_version: pkg.minimum_supported_version,
+          minimum_status: minimumStatus,
           latest_status: latestStatus,
           latest_next_step: versionNextStep,
           update_command: pkg.update_command,
@@ -1377,6 +1428,7 @@ server.registerTool(
         }];
       })
     );
+    const backendPackageDrift = Object.fromEntries(backendPackageDriftEntries);
 
     const workspaceDependencyChecks: Record<string, unknown> = {};
     if (config.languages.vue?.enabled) {
@@ -1672,6 +1724,9 @@ server.registerTool(
       }
       if (drift.latest_status === "outdated") {
         recommendations.push(`${lang} backend is behind latest registry version. ${drift.latest_next_step}`);
+      }
+      if (drift.minimum_status === "below_minimum") {
+        recommendations.push(`${lang} backend is below minimum supported version ${drift.minimum_supported_version}. Upgrade via: ${drift.update_command}`);
       }
     }
 

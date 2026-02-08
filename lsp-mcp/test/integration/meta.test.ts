@@ -33,6 +33,7 @@ describe("Meta Tools", () => {
     const typescriptBackend = result.backends.find((b: any) => b.name === "typescript");
     expect(typescriptBackend.package).toBe("@treedy/typescript-lsp-mcp@latest");
     expect(typescriptBackend.resolver).toBe("npx");
+    expect(result.backend_packages.find((pkg: any) => pkg.language === "typescript")?.minimum_supported_version).toBeDefined();
 
     const vueBackend = result.backends.find((b: any) => b.name === "vue");
     expect(vueBackend.package).toBe("@treedy/vue-lsp-mcp@latest");
@@ -68,6 +69,7 @@ describe("Meta Tools", () => {
     expect(typescriptPkg.install_command).toBe("npx --yes @treedy/typescript-lsp-mcp@latest");
     expect(typescriptPkg.update_command).toBe("npx --yes @treedy/typescript-lsp-mcp@latest");
     expect(typescriptPkg.default_channel).toBe("latest");
+    expect(typescriptPkg.minimum_supported_version).toBe("0.1.0");
 
     const vuePkg = result.backend_packages.find((pkg: any) => pkg.language === "vue");
     expect(vuePkg.package_ref).toBe("@treedy/vue-lsp-mcp@latest");
@@ -104,6 +106,8 @@ describe("Meta Tools", () => {
     expect(result.backendPackageDrift.typescript.drift_status).toBeDefined();
     expect(result.backendPackageDrift.typescript.latest_status).toBeDefined();
     expect(result.backendPackageDrift.typescript.latest_next_step).toBeDefined();
+    expect(result.backendPackageDrift.typescript.minimum_supported_version).toBeDefined();
+    expect(result.backendPackageDrift.typescript.minimum_status).toBeDefined();
     expect(result.backendPackageDrift.typescript.next_step).toBeDefined();
     expect(["registry", "auto", "bundled"]).toContain(result.backendRuntimeMode);
     expect(result.workspaceDependencyChecks).toBeDefined();

@@ -106,12 +106,15 @@ Example fields exposed for client/LLM orchestration:
       "install_command": "npx --yes @treedy/typescript-lsp-mcp@latest",
       "update_command": "npx --yes @treedy/typescript-lsp-mcp@latest",
       "default_channel": "latest",
-      "auto_update_enabled": true
+      "auto_update_enabled": true,
+      "minimum_supported_version": "0.1.0"
     }
   ],
   "backendPackageDrift": {
     "typescript": {
       "installed_version": "0.2.0",
+      "minimum_supported_version": "0.1.0",
+      "minimum_status": "supported",
       "drift_status": "policy_aligned",
       "latest_registry_version": "0.2.0",
       "latest_status": "up_to_date",

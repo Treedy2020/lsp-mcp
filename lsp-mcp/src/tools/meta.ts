@@ -40,6 +40,7 @@ export type BackendPackageInfo = {
   update_command: string;
   default_channel: "latest";
   auto_update_enabled: boolean;
+  minimum_supported_version: string;
 };
 
 function resolveBackendRuntimeMode(): "registry" | "bundled" | "auto" {
@@ -63,6 +64,7 @@ export function getBackendPackages(config: Config): BackendPackageInfo[] {
           resolver: "npx",
           install_command: "npx --yes @treedy/pyright-mcp@latest",
           update_command: "npx --yes @treedy/pyright-mcp@latest",
+          minimum_supported_version: "0.1.0",
         }
       : {
           package: "python-lsp-mcp",
@@ -71,6 +73,7 @@ export function getBackendPackages(config: Config): BackendPackageInfo[] {
           resolver: "uvx",
           install_command: "uvx --quiet --upgrade python-lsp-mcp",
           update_command: "uvx --quiet --upgrade python-lsp-mcp",
+          minimum_supported_version: "1.20.0",
         };
 
   return [
@@ -92,6 +95,7 @@ export function getBackendPackages(config: Config): BackendPackageInfo[] {
       update_command: "npx --yes @treedy/typescript-lsp-mcp@latest",
       default_channel: "latest",
       auto_update_enabled: config.autoUpdate,
+      minimum_supported_version: "0.1.0",
     },
     {
       language: "vue",
@@ -104,6 +108,7 @@ export function getBackendPackages(config: Config): BackendPackageInfo[] {
       update_command: "npx --yes @treedy/vue-lsp-mcp@latest",
       default_channel: "latest",
       auto_update_enabled: config.autoUpdate,
+      minimum_supported_version: "0.2.0",
     },
   ];
 }

@@ -82,6 +82,8 @@
 - [x] Added `lsp_probe_profile` meta tool to expose probe planning metadata directly to clients.
 - [x] Defaulted backend runtime strategy to `registry` with explicit `LSP_MCP_BACKEND_RUNTIME_MODE` override (`registry|auto|bundled`).
 - [x] Extended `doctor.backendPackageDrift` with latest-version drift fields (`latest_registry_version`, `latest_status`, `latest_next_step`).
+- [x] Added `backend_packages.minimum_supported_version` and `doctor.backendPackageDrift.minimum_status` for policy floor checks.
+- [x] Added latest registry lookup cache/in-flight dedupe to keep `doctor(check_latest_versions=true)` stable under repeated calls.
 
 ### P2
 - [ ] Add automated extraction of per-test latency into machine-readable artifacts (JSON).
