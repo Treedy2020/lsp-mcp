@@ -75,16 +75,21 @@ describe("TypeScript Hierarchy Tools", () => {
     expect(Array.isArray(result.items[0].incoming)).toBe(true);
   });
 
-  it("should return structured NOT_IMPLEMENTED for type hierarchy", async () => {
+  it("should return type hierarchy via native support or fallback", async () => {
     const result = await client.callTool("type_hierarchy", {
       file: TEST_FILE,
       line: 1,
       column: 10,
       direction: "both",
     });
-    expect(result.error_code).toBe("NOT_IMPLEMENTED");
+    if (result.error_code === "NOT_IMPLEMENTED") {
+      expect(result.strict_mode).toBe(true);
+      expect(result.next_step).toBeDefined();
+      return;
+    }
+    expect(result.tool).toBe("type_hierarchy");
     expect(result.strict_mode).toBe(true);
-    expect(result.next_step).toBeDefined();
+    expect(result.hierarchy).toBeDefined();
   });
 
   it("should return document highlights for symbol", async () => {

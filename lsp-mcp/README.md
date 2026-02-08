@@ -50,7 +50,7 @@ git_diagnostics
 Use these directly; language is inferred from file/path:
 
 - Navigation: `hover`, `definition`, `implementation`, `type_definition`, `call_hierarchy`, `type_hierarchy`, `document_highlight`, `selection_range`, `folding_range`, `document_link`, `linked_editing_range`, `semantic_tokens`, `moniker`, `references`, `peek_definition`, `workspace_symbol`
-  - `type_hierarchy` and `inlay_hint_resolve` use strict backend methods when available, otherwise return explicit `fallback_used=true` + `approximate=true` results.
+  - `type_hierarchy`, `semantic_tokens`, `linked_editing_range`, and `inlay_hint_resolve` use strict backend methods when available, otherwise return explicit `fallback_used=true` + `approximate=true` results.
 - Hinting: `inlay_hints`, `inlay_hint_resolve`, `read_file_with_hints`
 - Composite semantic workflow: `semantic_navigate` (optional search -> definition -> references -> read_file_with_hints)
   - `mode='deep'` (default) runs full workflow; `mode='fast'` skips heavy hint reads unless explicitly requested

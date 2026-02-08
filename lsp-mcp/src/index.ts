@@ -3571,6 +3571,82 @@ function toHintPosition1Based(hint: Record<string, unknown>, language: Language)
   return null;
 }
 
+function buildApproximateSemanticTokens(content: string, language: Language): Array<{
+  line: number;
+  column: number;
+  length: number;
+  token_type: string;
+  token_modifiers: string[];
+  text: string;
+}> {
+  const keywords = new Set([
+    "class", "interface", "type", "extends", "implements", "function", "return", "const", "let", "var",
+    "if", "else", "for", "while", "import", "export", "from", "def", "async", "await", "try", "except",
+  ]);
+  const tokens: Array<{
+    line: number;
+    column: number;
+    length: number;
+    token_type: string;
+    token_modifiers: string[];
+    text: string;
+  }> = [];
+  const lines = content.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line) continue;
+    const regex = /"([^"\\]|\\.)*"|'([^'\\]|\\.)*'|\b\d+(?:\.\d+)?\b|[A-Za-z_$][A-Za-z0-9_$]*/g;
+    let m: RegExpExecArray | null;
+    while ((m = regex.exec(line)) !== null) {
+      const text = m[0];
+      const col = m.index + 1;
+      let tokenType = "variable";
+      if (text.startsWith("'") || text.startsWith("\"")) tokenType = "string";
+      else if (/^\d/.test(text)) tokenType = "number";
+      else if (keywords.has(text)) tokenType = "keyword";
+      else if (/[A-Z]/.test(text[0])) tokenType = language === "python" ? "class" : "type";
+      else if (line.slice(m.index + text.length).trimStart().startsWith("(")) tokenType = "function";
+      else if (m.index > 0 && line[m.index - 1] === ".") tokenType = "property";
+      tokens.push({
+        line: i + 1,
+        column: col,
+        length: text.length,
+        token_type: tokenType,
+        token_modifiers: [],
+        text,
+      });
+      if (tokens.length >= 5000) return tokens;
+    }
+  }
+  return tokens;
+}
+
+function buildApproximateLinkedEditingRanges(
+  content: string,
+  line: number,
+  column: number
+): { identifier: string | null; ranges: Array<{ start: { line: number; column: number }; end: { line: number; column: number } }> } {
+  const ident = extractIdentifierAtPosition(content, line, column);
+  if (!ident) return { identifier: null, ranges: [] };
+  const escaped = ident.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const regex = new RegExp(`\\b${escaped}\\b`, "g");
+  const ranges: Array<{ start: { line: number; column: number }; end: { line: number; column: number } }> = [];
+  const lines = content.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    regex.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = regex.exec(lines[i])) !== null) {
+      const startCol = m.index + 1;
+      ranges.push({
+        start: { line: i + 1, column: startCol },
+        end: { line: i + 1, column: startCol + ident.length },
+      });
+      if (ranges.length >= 5000) return { identifier: ident, ranges };
+    }
+  }
+  return { identifier: ident, ranges };
+}
+
 function findDeclarationInFile(content: string, identifier: string): { line: number; column: number } | null {
   const lines = content.split("\n");
   const declarationPatterns = [
@@ -5425,6 +5501,102 @@ function preRegisterTools(): void {
                       fallback_used: true,
                       approximate: true,
                       next_step: "Retry type_hierarchy or use definition/references manually.",
+                    }))),
+                  }],
+                }, tool.name, resolvedWorkspace, backendInstanceId(), language);
+              }
+            }
+
+            if (tool.name === "semantic_tokens") {
+              try {
+                const sourceText = fs.existsSync(absPath) ? fs.readFileSync(absPath, "utf-8") : "";
+                const approxTokens = buildApproximateSemanticTokens(sourceText, language);
+                return withSemanticContext({
+                  content: [{
+                    type: "text",
+                    text: JSON.stringify(withStandardCostFields(withConfidenceFields({
+                      ok: true,
+                      tool: "semantic_tokens",
+                      strict_mode: true,
+                      fallback_used: true,
+                      approximate: true,
+                      file: absPath,
+                      tokens: approxTokens.slice(0, 1000),
+                      count: approxTokens.length,
+                      next_step: "Use approximate tokens for structural reading; validate with hover/definition before edits.",
+                      truncated: approxTokens.length > 1000,
+                      cursor_available: false,
+                    }))),
+                  }],
+                }, tool.name, resolvedWorkspace, backendInstanceId(), language);
+              } catch (error) {
+                return withSemanticContext({
+                  content: [{
+                    type: "text",
+                    text: JSON.stringify(withStandardCostFields(withConfidenceFields({
+                      error: String(error),
+                      error_code: "SEMANTIC_TOKENS_FALLBACK_ERROR",
+                      strict_mode: true,
+                      fallback_used: true,
+                      approximate: true,
+                      next_step: "Retry semantic_tokens or use summarize_file/read_file_with_hints.",
+                    }))),
+                  }],
+                }, tool.name, resolvedWorkspace, backendInstanceId(), language);
+              }
+            }
+
+            if (tool.name === "linked_editing_range") {
+              try {
+                const sourceText = fs.existsSync(absPath) ? fs.readFileSync(absPath, "utf-8") : "";
+                const line = Number((args as Record<string, unknown>).line);
+                const column = Number((args as Record<string, unknown>).column);
+                const approx = buildApproximateLinkedEditingRanges(sourceText, line, column);
+                if (!approx.identifier) {
+                  return withSemanticContext({
+                    content: [{
+                      type: "text",
+                      text: JSON.stringify(withStandardCostFields(withConfidenceFields({
+                        error: "Unable to infer symbol for linked editing fallback",
+                        error_code: "NO_SYMBOL_AT_POSITION",
+                        strict_mode: true,
+                        fallback_used: true,
+                        approximate: true,
+                        next_step: "Move cursor onto an identifier and retry linked_editing_range.",
+                      }))),
+                    }],
+                  }, tool.name, resolvedWorkspace, backendInstanceId(), language);
+                }
+                return withSemanticContext({
+                  content: [{
+                    type: "text",
+                    text: JSON.stringify(withStandardCostFields(withConfidenceFields({
+                      ok: true,
+                      tool: "linked_editing_range",
+                      strict_mode: true,
+                      fallback_used: true,
+                      approximate: true,
+                      file: absPath,
+                      identifier: approx.identifier,
+                      ranges: approx.ranges.slice(0, 1000),
+                      count: approx.ranges.length,
+                      next_step: "Use linked ranges for synchronized edits; validate with references before large refactors.",
+                      truncated: approx.ranges.length > 1000,
+                      cursor_available: false,
+                    }))),
+                  }],
+                }, tool.name, resolvedWorkspace, backendInstanceId(), language);
+              } catch (error) {
+                return withSemanticContext({
+                  content: [{
+                    type: "text",
+                    text: JSON.stringify(withStandardCostFields(withConfidenceFields({
+                      error: String(error),
+                      error_code: "LINKED_EDITING_RANGE_FALLBACK_ERROR",
+                      strict_mode: true,
+                      fallback_used: true,
+                      approximate: true,
+                      next_step: "Retry linked_editing_range or use references for safer edit scope.",
                     }))),
                   }],
                 }, tool.name, resolvedWorkspace, backendInstanceId(), language);
