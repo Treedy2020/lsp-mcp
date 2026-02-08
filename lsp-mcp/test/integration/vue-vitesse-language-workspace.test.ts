@@ -94,4 +94,34 @@ describe("Vue Language Workspace", () => {
     expect(result.error).toBeUndefined();
     expect(Array.isArray(result.tokens)).toBe(true);
   }, 120000);
+
+  it("should return moniker-style identity for Vue symbol", async () => {
+    const testFile = path.join(WORKSPACE_ROOT, "src/components/__lsp_moniker_test__.vue");
+    fs.writeFileSync(
+      testFile,
+      [
+        "<script setup lang=\"ts\">",
+        "const sharedName = 'x'",
+        "console.log(sharedName)",
+        "</script>",
+        "",
+      ].join("\n")
+    );
+    try {
+      await client.callTool("switch_workspace_for_language", {
+        language: "vue",
+        path: WORKSPACE_ROOT,
+      });
+      const result = await client.callTool("moniker", {
+        file: testFile,
+        line: 3,
+        column: 14,
+      });
+      expect(result.error).toBeUndefined();
+      expect(typeof result.identifier).toBe("string");
+      expect(typeof result.source_file).toBe("string");
+    } finally {
+      if (fs.existsSync(testFile)) fs.unlinkSync(testFile);
+    }
+  }, 120000);
 });
