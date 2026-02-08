@@ -75,6 +75,8 @@
 ### P1
 - [x] Added `doctor.languageCommandChains` for per-language setup/dependency/repro commands.
 - [x] Added mixed-root benchmark matrix test and integrated it into `test:benchmark`.
+- [x] Added `doctor.featureCapabilityMatrix.feature_next_steps` with executable per-feature commands for LLM agents.
+- [x] Added `semantic_session_start.feature_probe_sequence` to standardize staged semantic probing workflow.
 
 ### P2
 - [ ] Add automated extraction of per-test latency into machine-readable artifacts (JSON).

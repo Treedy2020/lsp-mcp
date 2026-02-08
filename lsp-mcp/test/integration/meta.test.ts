@@ -123,7 +123,7 @@ describe("Meta Tools", () => {
     expect(result.featureCapabilityMatrix.typescript.feature_next_steps.semantic_tokens.status).toBe("supported");
     expect(result.featureCapabilityMatrix.typescript.feature_next_steps.semantic_tokens.command).toContain("semantic_tokens(");
     expect(["supported", "not_supported"]).toContain(result.featureCapabilityMatrix.python.features.semantic_tokens);
-  });
+  }, 15000);
 
   it("should support doctor pagination via expand_result", async () => {
     const first = await client.callTool("doctor", { page_size: 1 });

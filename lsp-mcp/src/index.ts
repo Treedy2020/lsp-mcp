@@ -449,6 +449,81 @@ function inferWorkspaceRootFromFile(filePath: string, language: Language): strin
     : path.dirname(filePath);
 }
 
+function isCodeSampleFile(filePath: string, language: Language): boolean {
+  const lower = filePath.toLowerCase();
+  if (lower.includes(`${path.sep}node_modules${path.sep}`)) return false;
+  if (lower.includes(`${path.sep}.git${path.sep}`)) return false;
+  if (lower.includes(`${path.sep}dist${path.sep}`)) return false;
+  if (lower.includes(`${path.sep}build${path.sep}`)) return false;
+  if (lower.includes(`${path.sep}.next${path.sep}`)) return false;
+  if (lower.includes(`${path.sep}.nuxt${path.sep}`)) return false;
+  if (lower.includes(`${path.sep}.venv${path.sep}`)) return false;
+  if (lower.includes(`${path.sep}__pycache__${path.sep}`)) return false;
+  if (language === "python") return lower.endsWith(".py");
+  if (language === "vue") return lower.endsWith(".vue");
+  if (language === "typescript") return (lower.endsWith(".ts") || lower.endsWith(".tsx")) && !lower.endsWith(".d.ts");
+  return false;
+}
+
+function findSampleFileForLanguage(workspace: string | null, language: Language): string | null {
+  if (!workspace || !fileExistsSafe(workspace)) return null;
+  let root = workspace;
+  try {
+    const stats = fs.statSync(root);
+    if (!stats.isDirectory()) return null;
+  } catch {
+    return null;
+  }
+
+  const preferredRoots = [
+    path.join(root, "src"),
+    path.join(root, "app"),
+    path.join(root, "packages"),
+    root,
+  ];
+  const seen = new Set<string>();
+  const queue: string[] = [];
+  for (const dir of preferredRoots) {
+    if (fileExistsSafe(dir) && !seen.has(dir)) {
+      queue.push(dir);
+      seen.add(dir);
+    }
+  }
+
+  let scanned = 0;
+  const maxScanned = 1200;
+  const ignoredDirs = new Set(["node_modules", ".git", "dist", "build", ".next", ".nuxt", ".venv", "__pycache__"]);
+
+  while (queue.length > 0 && scanned < maxScanned) {
+    const current = queue.shift()!;
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      const abs = path.join(current, entry.name);
+      scanned++;
+      if (scanned > maxScanned) break;
+      if (entry.isDirectory()) {
+        if (entry.name.startsWith(".")) continue;
+        if (ignoredDirs.has(entry.name)) continue;
+        if (!seen.has(abs)) {
+          seen.add(abs);
+          queue.push(abs);
+        }
+        continue;
+      }
+      if (entry.isFile() && isCodeSampleFile(abs, language)) {
+        return abs;
+      }
+    }
+  }
+  return null;
+}
+
 // Create MCP server
 const server = new McpServer({
   name: "lsp-mcp",
@@ -937,6 +1012,7 @@ server.registerTool(
 
     let backendStarted = false;
     let backendStartError: string | null = null;
+    let availableTools: string[] | null = null;
     const shouldStartBackend = start_backend !== false;
     if (shouldStartBackend && resolvedWorkspace && dependencyStatus === "ok") {
       try {
@@ -949,6 +1025,7 @@ server.registerTool(
             startedBackends.add(resolvedLanguage);
             await backendManager.callTool(resolvedLanguage, "switch_workspace", { path: resolvedWorkspace });
             backendStarted = true;
+            availableTools = (await backendManager.getTools(resolvedLanguage)).map((t) => t.name);
           }
         } else {
           backendStartError = "Failed to acquire backend singleton lock.";
@@ -958,7 +1035,68 @@ server.registerTool(
       }
     }
 
-    commands.push(`hover(file='/abs/path/to/${resolvedLanguage === "python" ? "module.py" : resolvedLanguage === "vue" ? "component.vue" : "file.ts"}', line=1, column=1)`);
+    const sampleFile =
+      findSampleFileForLanguage(resolvedWorkspace, resolvedLanguage) ||
+      (resolvedLanguage === "python"
+        ? "/abs/path/to/module.py"
+        : resolvedLanguage === "vue"
+          ? "/abs/path/to/component.vue"
+          : "/abs/path/to/file.ts");
+    const sampleHover = `hover(file='${sampleFile}', line=1, column=1)`;
+    commands.push(sampleHover);
+    const isSupported = (name: string) => (availableTools ? availableTools.includes(name) : true);
+    const probeSteps = [
+      {
+        phase: "p0_bootstrap",
+        feature: "hover",
+        command: sampleHover,
+        expected: "basic semantic pipeline alive",
+      },
+      {
+        phase: "p0_bootstrap",
+        feature: "definition",
+        command: `definition(file='${sampleFile}', line=1, column=1)`,
+        expected: "cross-file navigation ready",
+      },
+      {
+        phase: "p1_context",
+        feature: "references",
+        command: `references(file='${sampleFile}', line=1, column=1)`,
+        expected: "fan-out impact graph available",
+      },
+      {
+        phase: "p1_context",
+        feature: "read_file_with_hints",
+        command: `read_file_with_hints(file='${sampleFile}', start_line=1, max_lines=120)`,
+        expected: "token-level reading with hints",
+      },
+      {
+        phase: "p2_advanced",
+        feature: "semantic_tokens",
+        command: `semantic_tokens(file='${sampleFile}')`,
+        expected: "semantic structure tokens available",
+      },
+      {
+        phase: "p2_advanced",
+        feature: "moniker",
+        command: `moniker(file='${sampleFile}', line=1, column=1)`,
+        expected: "cross-package identity available",
+      },
+      {
+        phase: "p2_advanced",
+        feature: "linked_editing_range",
+        command: `linked_editing_range(file='${sampleFile}', line=1, column=1)`,
+        expected: "paired edits coordination ready",
+      },
+    ].map((step) =>
+      isSupported(step.feature)
+        ? { ...step, status: "supported" as const }
+        : {
+            ...step,
+            status: "not_supported" as const,
+            fallback_command: sampleHover,
+          }
+    );
     const success = !!resolvedWorkspace && dependencyStatus === "ok" && (!shouldStartBackend || backendStarted);
     return {
       content: [{
@@ -976,6 +1114,7 @@ server.registerTool(
           backend_start_error: backendStartError,
           strict_mode: true,
           commands,
+          feature_probe_sequence: probeSteps,
           next_step: success ? commands[commands.length - 1] : (installCommands[0] || commands[0]),
         }),
       }],
@@ -1239,13 +1378,13 @@ server.registerTool(
       "call_hierarchy",
     ] as const;
     const featureCommandTemplate = (lang: Language, feature: string, workspace: string | null) => {
-      const base = workspace || "/abs/project/root";
       const sampleFile =
-        lang === "python"
+        findSampleFileForLanguage(workspace, lang) ||
+        (lang === "python"
           ? "/abs/path/to/module.py"
           : lang === "vue"
             ? "/abs/path/to/component.vue"
-            : "/abs/path/to/file.ts";
+            : "/abs/path/to/file.ts");
       if (feature === "semantic_tokens") return `semantic_tokens(file='${sampleFile}')`;
       if (feature === "linked_editing_range") return `linked_editing_range(file='${sampleFile}', line=1, column=1)`;
       if (feature === "moniker") return `moniker(file='${sampleFile}', line=1, column=1)`;

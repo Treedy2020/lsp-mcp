@@ -43,6 +43,10 @@ describe("Semantic Session Start", () => {
     expect(result.dependency_status).toBe("ok");
     expect(Array.isArray(result.commands)).toBe(true);
     expect(String(result.next_step || "")).toContain("hover(");
+    expect(result.commands.some((c: string) => c.includes(TS_FILE))).toBe(true);
+    expect(Array.isArray(result.feature_probe_sequence)).toBe(true);
+    expect(result.feature_probe_sequence.length).toBeGreaterThan(3);
+    expect(result.feature_probe_sequence.some((s: any) => s.feature === "moniker")).toBe(true);
 
     const status = await client.callTool("status", {});
     expect(status.workspaces.overrides.typescript).toBe(TEST_DIR);
