@@ -267,6 +267,50 @@ type WorkspaceCandidate = {
   hasVueDependency: boolean;
 };
 
+type ProbeMetadata = {
+  expected_latency_ms: { p50: number; p95: number };
+  failure_signatures: string[];
+};
+
+const LLM_FEATURE_PROBE_METADATA = {
+  hover: {
+    expected_latency_ms: { p50: 120, p95: 1200 },
+    failure_signatures: ["LANGUAGE_WORKSPACE_REQUIRED", "VUE_SEMANTIC_DEPS_MISSING", "No information available at this position"],
+  },
+  definition: {
+    expected_latency_ms: { p50: 180, p95: 1600 },
+    failure_signatures: ["LANGUAGE_WORKSPACE_REQUIRED", "VUE_SEMANTIC_DEPS_MISSING", "No definition found"],
+  },
+  references: {
+    expected_latency_ms: { p50: 260, p95: 2200 },
+    failure_signatures: ["LANGUAGE_WORKSPACE_REQUIRED", "VUE_SEMANTIC_DEPS_MISSING", "count: 0"],
+  },
+  read_file_with_hints: {
+    expected_latency_ms: { p50: 300, p95: 2600 },
+    failure_signatures: ["LANGUAGE_WORKSPACE_REQUIRED", "No inlay hint support available", "Failed to read file with hints"],
+  },
+  semantic_tokens: {
+    expected_latency_ms: { p50: 220, p95: 1800 },
+    failure_signatures: ["NOT_IMPLEMENTED", "Method not found", "VUE_SEMANTIC_DEPS_MISSING"],
+  },
+  moniker: {
+    expected_latency_ms: { p50: 200, p95: 1800 },
+    failure_signatures: ["NOT_IMPLEMENTED", "No symbol moniker available", "No definition found"],
+  },
+  linked_editing_range: {
+    expected_latency_ms: { p50: 220, p95: 2000 },
+    failure_signatures: ["NOT_IMPLEMENTED", "count: 0", "Cannot rename symbol at this position"],
+  },
+  inlay_hint_resolve: {
+    expected_latency_ms: { p50: 260, p95: 2000 },
+    failure_signatures: ["NOT_IMPLEMENTED", "No inlay hint found", "No inlay hint support available"],
+  },
+  call_hierarchy: {
+    expected_latency_ms: { p50: 280, p95: 2200 },
+    failure_signatures: ["NOT_IMPLEMENTED", "No call hierarchy available", "LANGUAGE_WORKSPACE_REQUIRED"],
+  },
+} satisfies Record<string, ProbeMetadata>;
+
 function fileExistsSafe(p: string): boolean {
   try {
     return fs.existsSync(p);
@@ -1045,36 +1089,7 @@ server.registerTool(
     const sampleHover = `hover(file='${sampleFile}', line=1, column=1)`;
     commands.push(sampleHover);
     const isSupported = (name: string) => (availableTools ? availableTools.includes(name) : true);
-    const probeMeta: Record<string, { expected_latency_ms: { p50: number; p95: number }; failure_signatures: string[] }> = {
-      hover: {
-        expected_latency_ms: { p50: 120, p95: 1200 },
-        failure_signatures: ["LANGUAGE_WORKSPACE_REQUIRED", "VUE_SEMANTIC_DEPS_MISSING", "No information available at this position"],
-      },
-      definition: {
-        expected_latency_ms: { p50: 180, p95: 1600 },
-        failure_signatures: ["LANGUAGE_WORKSPACE_REQUIRED", "VUE_SEMANTIC_DEPS_MISSING", "No definition found"],
-      },
-      references: {
-        expected_latency_ms: { p50: 260, p95: 2200 },
-        failure_signatures: ["LANGUAGE_WORKSPACE_REQUIRED", "VUE_SEMANTIC_DEPS_MISSING", "count: 0"],
-      },
-      read_file_with_hints: {
-        expected_latency_ms: { p50: 300, p95: 2600 },
-        failure_signatures: ["LANGUAGE_WORKSPACE_REQUIRED", "No inlay hint support available", "Failed to read file with hints"],
-      },
-      semantic_tokens: {
-        expected_latency_ms: { p50: 220, p95: 1800 },
-        failure_signatures: ["NOT_IMPLEMENTED", "Method not found", "VUE_SEMANTIC_DEPS_MISSING"],
-      },
-      moniker: {
-        expected_latency_ms: { p50: 200, p95: 1800 },
-        failure_signatures: ["NOT_IMPLEMENTED", "No symbol moniker available", "No definition found"],
-      },
-      linked_editing_range: {
-        expected_latency_ms: { p50: 220, p95: 2000 },
-        failure_signatures: ["NOT_IMPLEMENTED", "count: 0", "Cannot rename symbol at this position"],
-      },
-    };
+    const probeMeta = LLM_FEATURE_PROBE_METADATA;
     const probeSteps = [
       {
         phase: "p0_bootstrap",
@@ -1421,32 +1436,6 @@ server.registerTool(
       "read_file_with_hints",
       "call_hierarchy",
     ] as const;
-    const featureProbeMeta: Record<string, { expected_latency_ms: { p50: number; p95: number }; failure_signatures: string[] }> = {
-      semantic_tokens: {
-        expected_latency_ms: { p50: 220, p95: 1800 },
-        failure_signatures: ["NOT_IMPLEMENTED", "Method not found", "VUE_SEMANTIC_DEPS_MISSING"],
-      },
-      linked_editing_range: {
-        expected_latency_ms: { p50: 220, p95: 2000 },
-        failure_signatures: ["NOT_IMPLEMENTED", "count: 0", "Cannot rename symbol at this position"],
-      },
-      moniker: {
-        expected_latency_ms: { p50: 200, p95: 1800 },
-        failure_signatures: ["NOT_IMPLEMENTED", "No symbol moniker available", "No definition found"],
-      },
-      inlay_hint_resolve: {
-        expected_latency_ms: { p50: 260, p95: 2000 },
-        failure_signatures: ["NOT_IMPLEMENTED", "No inlay hint found", "No inlay hint support available"],
-      },
-      read_file_with_hints: {
-        expected_latency_ms: { p50: 300, p95: 2600 },
-        failure_signatures: ["No inlay hint support available", "Failed to read file with hints", "LANGUAGE_WORKSPACE_REQUIRED"],
-      },
-      call_hierarchy: {
-        expected_latency_ms: { p50: 280, p95: 2200 },
-        failure_signatures: ["NOT_IMPLEMENTED", "No call hierarchy available", "LANGUAGE_WORKSPACE_REQUIRED"],
-      },
-    };
     const featureCommandTemplate = (lang: Language, feature: string, workspace: string | null) => {
       const sampleFile =
         findSampleFileForLanguage(workspace, lang) ||
@@ -1470,7 +1459,7 @@ server.registerTool(
       if (!probe_backends) {
         const featureNextSteps = Object.fromEntries(
           llmFeatureTargets.map((feature) => {
-            const meta = featureProbeMeta[feature];
+            const meta = LLM_FEATURE_PROBE_METADATA[feature];
             return [
               feature,
               {
@@ -1504,7 +1493,7 @@ server.registerTool(
           llmFeatureTargets.map((feature) => {
             const supported = toolSet.has(feature);
             const command = featureCommandTemplate(language, feature, chainWorkspace);
-            const meta = featureProbeMeta[feature];
+            const meta = LLM_FEATURE_PROBE_METADATA[feature];
             return [
               feature,
               supported
