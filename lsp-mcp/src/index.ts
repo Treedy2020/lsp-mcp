@@ -1344,6 +1344,41 @@ server.registerTool(
         registryLatestInflight.delete(cacheKey);
       }
     };
+    const latestLookupStats = {
+      enabled: !!check_latest_versions,
+      requested: 0,
+      cache_hits: 0,
+      inflight_hits: 0,
+      executed: 0,
+      succeeded: 0,
+      failed: 0,
+      skipped: 0,
+    };
+    const fetchLatestWithStats = async (
+      pkg: { package: string; registry: "npm" | "pypi"; resolver: "npx" | "uvx" }
+    ): Promise<RegistryLookupResult> => {
+      latestLookupStats.requested += 1;
+      if (!check_latest_versions) {
+        latestLookupStats.skipped += 1;
+        return { latest_version: null, source: "unknown", error: "latest check disabled (set check_latest_versions=true)" };
+      }
+      const cacheKey = `${pkg.registry}:${pkg.package}`;
+      const now = Date.now();
+      const cached = registryLatestCache.get(cacheKey);
+      if (cached && cached.expiresAt > now) {
+        latestLookupStats.cache_hits += 1;
+        return cached.value;
+      }
+      if (registryLatestInflight.has(cacheKey)) {
+        latestLookupStats.inflight_hits += 1;
+      } else {
+        latestLookupStats.executed += 1;
+      }
+      const result = await fetchLatestRegistryVersion(pkg);
+      if (result.latest_version) latestLookupStats.succeeded += 1;
+      else latestLookupStats.failed += 1;
+      return result;
+    };
     const backendPackageDriftEntries = await Promise.all(
       backendPackages.map(async (pkg) => {
         const versionInfo = versionByLanguage.get(pkg.language);
@@ -1354,7 +1389,7 @@ server.registerTool(
         const usingLatestPolicy = pkg.registry === "npm"
           ? command.includes("@latest")
           : command.includes("--upgrade");
-        const latestRegistry = await fetchLatestRegistryVersion(pkg);
+        const latestRegistry = await fetchLatestWithStats(pkg);
         const installedSemver = parseSemver(installedVersion);
         const latestSemver = parseSemver(latestRegistry.latest_version);
         const minimumSupportedSemver = parseSemver(pkg.minimum_supported_version);
@@ -1429,6 +1464,41 @@ server.registerTool(
       })
     );
     const backendPackageDrift = Object.fromEntries(backendPackageDriftEntries);
+    const backendVersionCounts = {
+      languages: backendPackageDriftEntries.length,
+      below_minimum: 0,
+      outdated: 0,
+      policy_drift: 0,
+      bundled_static: 0,
+      unknown_latest: 0,
+    };
+    const backendVersionByLanguage = Object.fromEntries(
+      backendPackageDriftEntries.map(([lang, drift]) => {
+        const value = drift as Record<string, any>;
+        if (value.minimum_status === "below_minimum") backendVersionCounts.below_minimum += 1;
+        if (value.latest_status === "outdated") backendVersionCounts.outdated += 1;
+        if (value.drift_status === "policy_drift") backendVersionCounts.policy_drift += 1;
+        if (value.drift_status === "bundled_static") backendVersionCounts.bundled_static += 1;
+        if (String(value.latest_status || "").startsWith("unknown")) backendVersionCounts.unknown_latest += 1;
+        return [lang, {
+          installed_version: value.installed_version,
+          installed_semver: value.installed_semver,
+          minimum_supported_version: value.minimum_supported_version,
+          minimum_status: value.minimum_status,
+          latest_registry_version: value.latest_registry_version,
+          latest_status: value.latest_status,
+          drift_status: value.drift_status,
+          update_command: value.update_command,
+          next_step: value.latest_next_step || value.next_step,
+        }];
+      })
+    );
+    const backendVersionSummary = {
+      check_latest_versions: !!check_latest_versions,
+      lookup_stats: latestLookupStats,
+      counts: backendVersionCounts,
+      by_language: backendVersionByLanguage,
+    };
 
     const workspaceDependencyChecks: Record<string, unknown> = {};
     if (config.languages.vue?.enabled) {
@@ -1737,6 +1807,7 @@ server.registerTool(
       backendRuntimeMode: backendRuntimeMode,
       enabledLanguages,
       backendPackageDrift,
+      backendVersionSummary,
       workspaceDependencyChecks,
       languageCommandChains,
       backendCommands,
@@ -1779,6 +1850,7 @@ server.registerTool(
       enabledLanguages,
       recommendations_count: recommendations.length,
       command_chains_count: Object.keys(languageCommandChains).length,
+      backend_version_counts: backendVersionSummary.counts,
       item_count: items.length,
     };
     const doctorCursor = makeCursor("doctor", items, items.length, doctorSummary);

@@ -84,6 +84,7 @@
 - [x] Extended `doctor.backendPackageDrift` with latest-version drift fields (`latest_registry_version`, `latest_status`, `latest_next_step`).
 - [x] Added `backend_packages.minimum_supported_version` and `doctor.backendPackageDrift.minimum_status` for policy floor checks.
 - [x] Added latest registry lookup cache/in-flight dedupe to keep `doctor(check_latest_versions=true)` stable under repeated calls.
+- [x] Added `doctor.backendVersionSummary` for compact per-language version triage and lookup statistics.
 
 ### P2
 - [ ] Add automated extraction of per-test latency into machine-readable artifacts (JSON).

@@ -89,6 +89,7 @@ Paged responses include:
 - In mixed-language monorepos, semantic tools require language workspace mapping (set via `switch_workspace_for_language` or `discover_language_workspaces(..., apply=true)`).
 - `doctor` now includes `workspaceDependencyChecks.language_workspace_discovery` with suggested per-language workspace commands.
 - `doctor` includes `backendPackageDrift` to show installed backend version vs latest policy and upgrade next steps.
+- `doctor` includes `backendVersionSummary` (counts + per-language concise status + latest lookup stats) for quick LLM triage.
 
 Example fields exposed for client/LLM orchestration:
 
