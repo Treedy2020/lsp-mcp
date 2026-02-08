@@ -111,6 +111,7 @@ describe("Meta Tools", () => {
     expect(Array.isArray(result.recommendations)).toBe(true);
     expect(result.featureCapabilityMatrix).toBeDefined();
     expect(result.featureCapabilityMatrix.typescript?.probe_required).toBe(true);
+    expect(result.featureCapabilityMatrix.typescript?.feature_next_steps?.semantic_tokens?.command).toContain("semantic_tokens(");
   });
 
   it("should expose doctor feature capability matrix when probing backends", async () => {
@@ -119,6 +120,8 @@ describe("Meta Tools", () => {
     expect(result.featureCapabilityMatrix.typescript).toBeDefined();
     expect(result.featureCapabilityMatrix.typescript.features).toBeDefined();
     expect(result.featureCapabilityMatrix.typescript.features.semantic_tokens).toBe("supported");
+    expect(result.featureCapabilityMatrix.typescript.feature_next_steps.semantic_tokens.status).toBe("supported");
+    expect(result.featureCapabilityMatrix.typescript.feature_next_steps.semantic_tokens.command).toContain("semantic_tokens(");
     expect(["supported", "not_supported"]).toContain(result.featureCapabilityMatrix.python.features.semantic_tokens);
   });
 

@@ -1238,18 +1238,47 @@ server.registerTool(
       "read_file_with_hints",
       "call_hierarchy",
     ] as const;
+    const featureCommandTemplate = (lang: Language, feature: string, workspace: string | null) => {
+      const base = workspace || "/abs/project/root";
+      const sampleFile =
+        lang === "python"
+          ? "/abs/path/to/module.py"
+          : lang === "vue"
+            ? "/abs/path/to/component.vue"
+            : "/abs/path/to/file.ts";
+      if (feature === "semantic_tokens") return `semantic_tokens(file='${sampleFile}')`;
+      if (feature === "linked_editing_range") return `linked_editing_range(file='${sampleFile}', line=1, column=1)`;
+      if (feature === "moniker") return `moniker(file='${sampleFile}', line=1, column=1)`;
+      if (feature === "inlay_hint_resolve") return `inlay_hint_resolve(file='${sampleFile}', line=1, column=1)`;
+      if (feature === "read_file_with_hints") return `read_file_with_hints(file='${sampleFile}', start_line=1, max_lines=80)`;
+      if (feature === "call_hierarchy") return `call_hierarchy(file='${sampleFile}', line=1, column=1, direction='both')`;
+      return `hover(file='${sampleFile}', line=1, column=1)`;
+    };
     const featureCapabilityMatrix: Record<string, any> = {};
     for (const lang of enabledLanguages) {
+      const language = lang as Language;
+      const chainWorkspace = (languageCommandChains[language] as { workspace?: string | null } | undefined)?.workspace || null;
       if (!probe_backends) {
+        const featureNextSteps = Object.fromEntries(
+          llmFeatureTargets.map((feature) => [
+            feature,
+            {
+              status: "unknown",
+              command: featureCommandTemplate(language, feature, chainWorkspace),
+              note: "Run doctor(probe_backends=true) for backend capability verification.",
+            },
+          ])
+        );
         featureCapabilityMatrix[lang] = {
           probe_required: true,
           status: "unknown",
           next_step: "Call doctor(probe_backends=true) to fetch per-language feature capabilities.",
+          feature_next_steps: featureNextSteps,
         };
         continue;
       }
       try {
-        const tools = await backendManager.getTools(lang as Language);
+        const tools = await backendManager.getTools(language);
         const toolSet = new Set(tools.map((t) => t.name));
         const features = Object.fromEntries(
           llmFeatureTargets.map((name) => [
@@ -1257,10 +1286,32 @@ server.registerTool(
             toolSet.has(name) ? "supported" : "not_supported",
           ])
         );
+        const featureNextSteps = Object.fromEntries(
+          llmFeatureTargets.map((feature) => {
+            const supported = toolSet.has(feature);
+            const command = featureCommandTemplate(language, feature, chainWorkspace);
+            return [
+              feature,
+              supported
+                ? {
+                    status: "supported",
+                    command,
+                    note: `Run ${feature} directly after workspace setup.`,
+                  }
+                : {
+                    status: "not_supported",
+                    command,
+                    fallback_command: "hover(file='/abs/path/to/file', line=1, column=1)",
+                    note: "Feature missing in backend; expect strict NOT_IMPLEMENTED.",
+                  },
+            ];
+          })
+        );
         featureCapabilityMatrix[lang] = {
           status: "ok",
           tool_count: tools.length,
           features,
+          feature_next_steps: featureNextSteps,
         };
       } catch (error) {
         featureCapabilityMatrix[lang] = {

@@ -165,4 +165,15 @@ describe("Python Integration (FastAPI)", () => {
     expect(result.error).toBeUndefined();
     expect(Array.isArray(result.ranges)).toBe(true);
   }, 60000);
+
+  it("should return moniker-style identity for Python symbol", async () => {
+    const result = await client.callTool("moniker", {
+      file: "fastapi/applications.py",
+      line: 1336,
+      column: 9,
+    });
+    expect(result.error).toBeUndefined();
+    expect(typeof result.identifier).toBe("string");
+    expect(typeof result.source_file).toBe("string");
+  }, 60000);
 });
