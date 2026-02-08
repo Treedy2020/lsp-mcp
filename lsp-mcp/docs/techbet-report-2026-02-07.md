@@ -85,6 +85,7 @@
 - [x] Added `backend_packages.minimum_supported_version` and `doctor.backendPackageDrift.minimum_status` for policy floor checks.
 - [x] Added latest registry lookup cache/in-flight dedupe to keep `doctor(check_latest_versions=true)` stable under repeated calls.
 - [x] Added `doctor.backendVersionSummary` for compact per-language version triage and lookup statistics.
+- [x] Stabilized `backendVersionSummary`/`lookup_stats` schema with explicit `schema_version` and `cache_ttl_ms`.
 
 ### P2
 - [ ] Add automated extraction of per-test latency into machine-readable artifacts (JSON).

@@ -1345,7 +1345,9 @@ server.registerTool(
       }
     };
     const latestLookupStats = {
+      schema_version: 1,
       enabled: !!check_latest_versions,
+      cache_ttl_ms: REGISTRY_LOOKUP_TTL_MS,
       requested: 0,
       cache_hits: 0,
       inflight_hits: 0,
@@ -1494,6 +1496,7 @@ server.registerTool(
       })
     );
     const backendVersionSummary = {
+      schema_version: 1,
       check_latest_versions: !!check_latest_versions,
       lookup_stats: latestLookupStats,
       counts: backendVersionCounts,
@@ -1850,6 +1853,7 @@ server.registerTool(
       enabledLanguages,
       recommendations_count: recommendations.length,
       command_chains_count: Object.keys(languageCommandChains).length,
+      backend_version_schema_version: backendVersionSummary.schema_version,
       backend_version_counts: backendVersionSummary.counts,
       item_count: items.length,
     };

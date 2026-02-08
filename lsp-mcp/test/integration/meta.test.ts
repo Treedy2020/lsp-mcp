@@ -110,8 +110,10 @@ describe("Meta Tools", () => {
     expect(result.backendPackageDrift.typescript.minimum_status).toBeDefined();
     expect(result.backendPackageDrift.typescript.next_step).toBeDefined();
     expect(result.backendVersionSummary).toBeDefined();
+    expect(result.backendVersionSummary.schema_version).toBe(1);
     expect(result.backendVersionSummary.by_language.typescript).toBeDefined();
     expect(result.backendVersionSummary.counts.languages).toBeGreaterThan(0);
+    expect(result.backendVersionSummary.lookup_stats.cache_ttl_ms).toBeGreaterThan(0);
     expect(["registry", "auto", "bundled"]).toContain(result.backendRuntimeMode);
     expect(result.workspaceDependencyChecks).toBeDefined();
     expect(result.workspaceDependencyChecks.language_workspace_discovery).toBeDefined();
@@ -144,8 +146,11 @@ describe("Meta Tools", () => {
   it("should expose latest lookup stats when latest-version check is enabled", async () => {
     const result = await client.callTool("doctor", { check_latest_versions: true });
     expect(result.backendVersionSummary).toBeDefined();
+    expect(result.backendVersionSummary.schema_version).toBe(1);
     expect(result.backendVersionSummary.check_latest_versions).toBe(true);
     expect(result.backendVersionSummary.lookup_stats.enabled).toBe(true);
+    expect(result.backendVersionSummary.lookup_stats.schema_version).toBe(1);
+    expect(result.backendVersionSummary.lookup_stats.cache_ttl_ms).toBeGreaterThan(0);
     expect(typeof result.backendVersionSummary.lookup_stats.requested).toBe("number");
   }, 15000);
 

@@ -89,7 +89,7 @@ Paged responses include:
 - In mixed-language monorepos, semantic tools require language workspace mapping (set via `switch_workspace_for_language` or `discover_language_workspaces(..., apply=true)`).
 - `doctor` now includes `workspaceDependencyChecks.language_workspace_discovery` with suggested per-language workspace commands.
 - `doctor` includes `backendPackageDrift` to show installed backend version vs latest policy and upgrade next steps.
-- `doctor` includes `backendVersionSummary` (counts + per-language concise status + latest lookup stats) for quick LLM triage.
+- `doctor` includes `backendVersionSummary` (stable schema with `schema_version`, `counts`, `by_language`, `lookup_stats`) for quick LLM triage.
 
 Example fields exposed for client/LLM orchestration:
 
@@ -121,6 +121,30 @@ Example fields exposed for client/LLM orchestration:
       "latest_status": "up_to_date",
       "next_step": "No action needed.",
       "latest_next_step": "Installed version matches latest policy."
+    }
+  },
+  "backendVersionSummary": {
+    "schema_version": 1,
+    "check_latest_versions": true,
+    "lookup_stats": {
+      "schema_version": 1,
+      "enabled": true,
+      "cache_ttl_ms": 300000,
+      "requested": 3,
+      "cache_hits": 2,
+      "inflight_hits": 0,
+      "executed": 1,
+      "succeeded": 1,
+      "failed": 0,
+      "skipped": 0
+    },
+    "counts": {
+      "languages": 3,
+      "below_minimum": 0,
+      "outdated": 0,
+      "policy_drift": 0,
+      "bundled_static": 0,
+      "unknown_latest": 0
     }
   }
 }
