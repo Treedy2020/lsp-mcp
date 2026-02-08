@@ -88,6 +88,9 @@
 - [x] Stabilized `backendVersionSummary`/`lookup_stats` schema with explicit `schema_version` and `cache_ttl_ms`.
 - [x] Standardized strict semantic responses with `recovery_plan` and cost fields (`latency_ms`, `result_size`, `truncated`, `cursor_available`).
 - [x] Added `semantic_navigate` composite tool (search -> definition -> references -> read_file_with_hints) and benchmark coverage.
+- [x] Added `doctor.capability_snapshot_id` reuse path to avoid repeated capability probing.
+- [x] Added `diagnostics_delta` incremental diagnostics tool to reduce repeated large diagnostics payload reads.
+- [x] Added semantic `confidence` / `confidence_reason` hints for fallback and strict error cases.
 
 ### P2
 - [ ] Add automated extraction of per-test latency into machine-readable artifacts (JSON).

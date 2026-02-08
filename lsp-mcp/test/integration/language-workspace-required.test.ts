@@ -48,5 +48,7 @@ describe("Language Workspace Requirement", () => {
     expect(typeof result.result_size).toBe("number");
     expect(typeof result.cursor_available).toBe("boolean");
     expect(typeof result.truncated).toBe("boolean");
+    expect(typeof result.confidence).toBe("number");
+    expect(typeof result.confidence_reason).toBe("string");
   });
 });

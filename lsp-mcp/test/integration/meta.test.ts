@@ -141,6 +141,19 @@ describe("Meta Tools", () => {
     expect(typeof result.featureCapabilityMatrix.typescript.feature_next_steps.semantic_tokens.expected_latency_ms?.p95).toBe("number");
     expect(result.featureCapabilityMatrix.typescript.feature_next_steps.semantic_tokens.failure_signatures.length).toBeGreaterThan(0);
     expect(["supported", "not_supported"]).toContain(result.featureCapabilityMatrix.python.features.semantic_tokens);
+    expect(typeof result.capability_snapshot_id).toBe("string");
+    expect(["created", "reused", "none"]).toContain(result.capability_snapshot_status);
+  }, 15000);
+
+  it("should reuse capability snapshot to avoid reprobe", async () => {
+    const probed = await client.callTool("doctor", { probe_backends: true });
+    const reused = await client.callTool("doctor", {
+      capability_snapshot_id: probed.capability_snapshot_id,
+      probe_backends: false,
+    });
+    expect(reused.capability_snapshot_id).toBe(probed.capability_snapshot_id);
+    expect(reused.capability_snapshot_status).toBe("reused");
+    expect(reused.featureCapabilityMatrix.typescript).toBeDefined();
   }, 15000);
 
   it("should expose latest lookup stats when latest-version check is enabled", async () => {

@@ -52,6 +52,7 @@ Use these directly; language is inferred from file/path:
 - Navigation: `hover`, `definition`, `implementation`, `type_definition`, `call_hierarchy`, `type_hierarchy`, `document_highlight`, `selection_range`, `folding_range`, `document_link`, `linked_editing_range`, `semantic_tokens`, `moniker`, `references`, `peek_definition`, `workspace_symbol`
 - Hinting: `inlay_hints`, `inlay_hint_resolve`, `read_file_with_hints`
 - Composite semantic workflow: `semantic_navigate` (optional search -> definition -> references -> read_file_with_hints)
+- Incremental diagnostics: `diagnostics_delta` (delta vs previous diagnostics snapshot)
 - Editing support: `completions`, `signature_help`, `prepare_rename`, `rename`, `code_action`, `run_code_action`, `code_lens`
 - Analysis: `diagnostics`, `git_diagnostics`, `symbols`, `search`, `summarize_file`, `read_file_with_hints`, `project_structure`
 - Sync/edit loop: `update_document`
@@ -67,7 +68,9 @@ For large repos, use preview arguments to reduce token usage:
 - `diagnostics`: `preview_limit` or `page_size` (default `200`), `summary_only` (default `false`), plus `cursor`
 - `doctor`: `page_size` (default `50`) plus `cursor` for long environment reports
 - `doctor`: set `check_latest_versions=true` to probe registry latest version drift (slower, network-dependent)
+- `doctor`: use `capability_snapshot_id` to reuse probed capability matrix and skip repeated backend capability probing
 - Strict semantic errors include `recovery_plan` and standard cost fields: `latency_ms`, `result_size`, `truncated`, `cursor_available`
+- Semantic responses include `confidence` and `confidence_reason` for fallback/approximation awareness
 - `project_structure`: `max_depth` (default `3`), `max_entries` (default `300`)
 - `summarize_file`: `max_symbols` (default `200`)
 - `read_file_with_hints`: `start_line` (default `1`), `max_lines` (default `300`)

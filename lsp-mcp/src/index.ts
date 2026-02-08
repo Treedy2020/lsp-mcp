@@ -75,6 +75,16 @@ const REGISTRY_LOOKUP_TTL_MS = Number.parseInt(process.env.LSP_MCP_REGISTRY_LOOK
 type RegistryLookupResult = { latest_version: string | null; source: "npm" | "pypi" | "unknown"; error?: string };
 const registryLatestCache = new Map<string, { value: RegistryLookupResult; expiresAt: number }>();
 const registryLatestInflight = new Map<string, Promise<RegistryLookupResult>>();
+const CAPABILITY_SNAPSHOT_TTL_MS = Number.parseInt(process.env.LSP_MCP_CAPABILITY_SNAPSHOT_TTL_MS || "600000", 10);
+type CapabilitySnapshotEntry = {
+  id: string;
+  createdAt: number;
+  expiresAt: number;
+  enabledLanguages: string[];
+  featureCapabilityMatrix: Record<string, any>;
+};
+const capabilitySnapshotStore = new Map<string, CapabilitySnapshotEntry>();
+const diagnosticsDeltaStore = new Map<string, { updatedAt: number; diagnostics: Array<Record<string, unknown>> }>();
 
 function resolveBackendRuntimeMode(): "registry" | "bundled" | "auto" {
   const requireBundled = (process.env.LSP_MCP_REQUIRE_BUNDLED_BACKENDS ?? "false").toLowerCase() === "true";
@@ -109,6 +119,53 @@ async function runCommandCapture(command: string, args: string[], timeoutMs = 50
   });
 }
 
+function makeCapabilitySnapshotId(enabledLanguages: string[]): string {
+  return `cap_${Date.now().toString(36)}_${enabledLanguages.join("-")}_${randomBytes(4).toString("hex")}`;
+}
+
+function readCapabilitySnapshot(id?: string | null): CapabilitySnapshotEntry | null {
+  if (!id) return null;
+  const entry = capabilitySnapshotStore.get(id);
+  if (!entry) return null;
+  if (entry.expiresAt <= Date.now()) {
+    capabilitySnapshotStore.delete(id);
+    return null;
+  }
+  return entry;
+}
+
+function cleanupCapabilitySnapshots() {
+  const now = Date.now();
+  for (const [id, entry] of capabilitySnapshotStore.entries()) {
+    if (entry.expiresAt <= now) capabilitySnapshotStore.delete(id);
+  }
+}
+
+function withConfidenceFields(payload: Record<string, unknown>): Record<string, unknown> {
+  if (typeof payload.confidence === "number" && typeof payload.confidence_reason === "string") {
+    return payload;
+  }
+  const errorCode = typeof payload.error_code === "string" ? payload.error_code : null;
+  const hasError = typeof payload.error === "string" && payload.error.length > 0;
+  let confidence = 0.9;
+  let reason = "Backend response appears complete and non-fallback.";
+  if (hasError) {
+    confidence = 0.2;
+    reason = `Strict error returned${errorCode ? ` (${errorCode})` : ""}; follow recovery plan before trusting result.`;
+  } else if (payload.fallback_used === true || payload.approximate === true) {
+    confidence = 0.55;
+    reason = "Fallback/approximate path used; validate with follow-up semantic call.";
+  } else if (typeof payload.count === "number" && payload.count === 0) {
+    confidence = 0.65;
+    reason = "No results found; this may be valid but should be double-checked.";
+  }
+  return {
+    ...payload,
+    confidence,
+    confidence_reason: reason,
+  };
+}
+
 function getWorkspaceForLanguage(language: Language): string | null {
   return activeWorkspaceByLanguage.get(language) || null;
 }
@@ -137,6 +194,7 @@ const SEMANTIC_TOOL_NAMES = new Set([
   "symbols",
   "completions",
   "diagnostics",
+  "diagnostics_delta",
   "rename",
   "prepare_rename",
   "signature_help",
@@ -186,6 +244,8 @@ function semanticWorkspaceRequiredResponse(language: Language, toolName: string)
         cursor_available: false,
         truncated: false,
         latency_ms: null,
+        confidence: 0.25,
+        confidence_reason: "Strict workspace precondition failed; no semantic result available.",
       }),
     }],
   };
@@ -332,12 +392,12 @@ function withSemanticContext(
       content: [{
         type: "text",
         text: JSON.stringify({
-          ...withStandardCostFields(normalizeSemanticErrorPayload(
+          ...withConfidenceFields(withStandardCostFields(normalizeSemanticErrorPayload(
             parsedRecord,
             toolName,
             parsedResolvedLanguage as Language | "multi" | null,
             resolvedWorkspace
-          )),
+          ))),
           resolved_language: parsed.resolved_language ?? parsed.language ?? effectiveLanguage,
           resolved_workspace: resolvedWorkspace,
           backend_instance_id: backendInstanceId,
@@ -357,6 +417,8 @@ function withSemanticContext(
           cursor_available: false,
           truncated: false,
           latency_ms: null,
+          confidence: 0.6,
+          confidence_reason: "Non-JSON response; semantic confidence is reduced.",
         }),
       }],
     };
@@ -1073,38 +1135,43 @@ server.registerTool(
     }
 
     if (!resolvedLanguage) {
+      const nextStep = "Call semantic_session_start(language='typescript'|'python'|'vue', workspace='/abs/project/root').";
+      const installCommands = ["semantic_session_start(language='typescript', workspace='/abs/project/root')"];
       return {
         content: [{
           type: "text",
-          text: JSON.stringify({
+          text: JSON.stringify(withConfidenceFields(withStandardCostFields({
             success: false,
             error: "SEMANTIC_SESSION_LANGUAGE_REQUIRED",
             error_code: "SEMANTIC_SESSION_LANGUAGE_REQUIRED",
             message: "Unable to infer language. Provide language or a file/workspace path.",
-            next_step: "Call semantic_session_start(language='typescript'|'python'|'vue', workspace='/abs/project/root').",
-            install_commands: ["semantic_session_start(language='typescript', workspace='/abs/project/root')"],
+            next_step: nextStep,
+            install_commands: installCommands,
+            recovery_plan: buildRecoveryPlan(installCommands, nextStep),
             missing_packages: [],
             strict_mode: true,
-          }),
+          }))),
         }],
       };
     }
 
     if (!config.languages[resolvedLanguage]?.enabled) {
+      const nextStep = `Set LSP_MCP_${resolvedLanguage.toUpperCase()}_ENABLED=true and restart server.`;
       return {
         content: [{
           type: "text",
-          text: JSON.stringify({
+          text: JSON.stringify(withConfidenceFields(withStandardCostFields({
             success: false,
             error: "LANGUAGE_DISABLED",
             error_code: "LANGUAGE_DISABLED",
             language: resolvedLanguage,
             message: `Language '${resolvedLanguage}' is disabled in current config.`,
-            next_step: `Set LSP_MCP_${resolvedLanguage.toUpperCase()}_ENABLED=true and restart server.`,
+            next_step: nextStep,
             install_commands: [],
+            recovery_plan: buildRecoveryPlan([], nextStep),
             missing_packages: [],
             strict_mode: true,
-          }),
+          }))),
         }],
       };
     }
@@ -1275,10 +1342,11 @@ server.registerTool(
           }
     );
     const success = !!resolvedWorkspace && dependencyStatus === "ok" && (!shouldStartBackend || backendStarted);
+    const nextStep = success ? commands[commands.length - 1] : (installCommands[0] || commands[0]);
     return {
       content: [{
         type: "text",
-        text: JSON.stringify({
+        text: JSON.stringify(withConfidenceFields(withStandardCostFields({
           success,
           language: resolvedLanguage,
           resolved_language: resolvedLanguage,
@@ -1292,8 +1360,9 @@ server.registerTool(
           strict_mode: true,
           commands,
           feature_probe_sequence: probeSteps,
-          next_step: success ? commands[commands.length - 1] : (installCommands[0] || commands[0]),
-        }),
+          next_step: nextStep,
+          recovery_plan: success ? [] : buildRecoveryPlan(installCommands, nextStep),
+        }))),
       }],
     };
   }
@@ -1463,7 +1532,7 @@ server.registerTool(
           [`doctor(probe_backends=true, check_latest_versions=true)`, `switch_workspace_for_language(language='${language}', path='${workspace}')`],
           nextStep
         );
-    const result = withStandardCostFields({
+    const result = withConfidenceFields(withStandardCostFields({
       ok,
       tool: "semantic_navigate",
       strict_mode: true,
@@ -1485,10 +1554,153 @@ server.registerTool(
       result_size: referenceCount,
       cursor_available: !!(referencesPayload as Record<string, any>)?.next?.arguments?.cursor,
       truncated: !!(referencesPayload as Record<string, any>)?.page?.has_more,
-    });
+    }));
     return {
       content: [{ type: "text", text: JSON.stringify(result) }],
     };
+  }
+);
+
+server.registerTool(
+  "diagnostics_delta",
+  {
+    description: "Run diagnostics and return delta against previous diagnostics snapshot for the same language/workspace/path.",
+    inputSchema: {
+      path: z.string(),
+      summary_only: z.boolean().default(false).optional(),
+      preview_limit: z.number().int().positive().default(100).optional(),
+    },
+  },
+  async ({ path: targetPath, summary_only, preview_limit }) => {
+    const absPath = path.isAbsolute(targetPath)
+      ? targetPath
+      : (activeWorkspacePath ? path.join(activeWorkspacePath, targetPath) : path.resolve(targetPath));
+    const language = inferLanguageFromPath(absPath, config);
+    if (!language) {
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            error: "UNSUPPORTED_FILE_TYPE",
+            error_code: "UNSUPPORTED_FILE_TYPE",
+            message: `Cannot infer language for '${targetPath}'.`,
+            strict_mode: true,
+            next_step: "Provide a file/path with a supported extension for diagnostics_delta.",
+            recovery_plan: [{
+              step: 1,
+              action: "provide_supported_path",
+              command: "diagnostics_delta(path='/abs/path/to/file.ts|.py|.vue')",
+              reason: "diagnostics_delta needs a language-resolvable file or directory.",
+            }],
+            ...withStandardCostFields({ result_size: 0, cursor_available: false, truncated: false, latency_ms: null }),
+          }),
+        }],
+      };
+    }
+    const workspace = getWorkspaceForLanguage(language);
+    if (!workspace) {
+      return semanticWorkspaceRequiredResponse(language, "diagnostics_delta");
+    }
+
+    const startedAt = Date.now();
+    const singletonLock = await ensureBackendSingleton(language, workspace);
+    if (!singletonLock.ok) {
+      return withSemanticContext(singletonLock.response, "diagnostics_delta", workspace, null, language);
+    }
+    const proxyHost = singletonLock.proxyHost;
+    const proxyPort = singletonLock.proxyPort;
+    const backendInstanceId =
+      proxyHost && proxyPort
+        ? `proxy:${language}@${proxyHost}:${proxyPort}`
+        : (backendManager.getBackendIdentity(language)?.instanceId ?? null);
+    const callBackendTool = (toolName: string, backendArgs: Record<string, unknown>) => {
+      if (proxyHost && proxyPort) {
+        return callRemoteBackendTool(proxyHost, proxyPort, language, toolName, backendArgs, workspace);
+      }
+      return backendManager.callTool(language, toolName, backendArgs);
+    };
+    if (!proxyHost && !proxyPort && !startedBackends.has(language)) {
+      await backendManager.getBackend(language);
+      startedBackends.add(language);
+      await backendManager.callTool(language, "switch_workspace", { path: workspace });
+    }
+
+    try {
+      const diagnosticsRes = await callBackendTool("diagnostics", {
+        path: absPath,
+        summary_only: !!summary_only,
+      });
+      const parsed = JSON.parse(diagnosticsRes.content?.[0]?.text || "{}");
+      const diagnostics = extractDiagnosticsItems(parsed);
+      const currentByFingerprint = new Map<string, Record<string, unknown>>();
+      for (const diag of diagnostics) {
+        currentByFingerprint.set(fingerprintDiagnostic(diag), diag);
+      }
+
+      const cacheKey = `${language}:${workspace}:${absPath}`;
+      const previous = diagnosticsDeltaStore.get(cacheKey);
+      const previousByFingerprint = new Map<string, Record<string, unknown>>();
+      for (const diag of previous?.diagnostics || []) {
+        previousByFingerprint.set(fingerprintDiagnostic(diag), diag);
+      }
+
+      const added: Array<Record<string, unknown>> = [];
+      const removed: Array<Record<string, unknown>> = [];
+      for (const [fp, diag] of currentByFingerprint.entries()) {
+        if (!previousByFingerprint.has(fp)) added.push(diag);
+      }
+      for (const [fp, diag] of previousByFingerprint.entries()) {
+        if (!currentByFingerprint.has(fp)) removed.push(diag);
+      }
+
+      diagnosticsDeltaStore.set(cacheKey, {
+        updatedAt: Date.now(),
+        diagnostics: diagnostics,
+      });
+
+      const limit = typeof preview_limit === "number" ? preview_limit : 100;
+      const deltaPayload = withConfidenceFields(withStandardCostFields({
+        ok: true,
+        tool: "diagnostics_delta",
+        strict_mode: true,
+        path: absPath,
+        resolved_language: language,
+        resolved_workspace: workspace,
+        backend_instance_id: backendInstanceId,
+        delta: {
+          previous_count: previous?.diagnostics.length ?? 0,
+          current_count: diagnostics.length,
+          added_count: added.length,
+          removed_count: removed.length,
+          added_preview: added.slice(0, limit),
+          removed_preview: removed.slice(0, limit),
+          baseline_created: !previous,
+          baseline_updated_at: previous?.updatedAt ?? null,
+        },
+        next_step: "Call diagnostics_delta again after edits to get incremental diagnostics changes.",
+        fallback_used: false,
+        approximate: false,
+        latency_ms: Date.now() - startedAt,
+        result_size: diagnostics.length,
+        cursor_available: false,
+        truncated: added.length > limit || removed.length > limit,
+      }));
+      return { content: [{ type: "text", text: JSON.stringify(deltaPayload) }] };
+    } catch (error) {
+      return withSemanticContext({
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            error: String(error),
+            error_code: "DIAGNOSTICS_DELTA_ERROR",
+            strict_mode: true,
+            next_step: "Retry diagnostics_delta or run diagnostics(path=...) directly.",
+            install_commands: [],
+            missing_packages: [],
+          }),
+        }],
+      }, "diagnostics_delta", workspace, backendInstanceId, language);
+    }
   }
 );
 
@@ -1499,12 +1711,14 @@ server.registerTool(
     inputSchema: {
       probe_backends: z.boolean().default(false).optional(),
       check_latest_versions: z.boolean().default(false).optional(),
+      capability_snapshot_id: z.string().optional(),
       page_size: z.number().int().positive().default(50).optional(),
       cursor: z.string().optional(),
     },
   },
-  async ({ probe_backends, check_latest_versions, page_size, cursor }) => {
+  async ({ probe_backends, check_latest_versions, capability_snapshot_id, page_size, cursor }) => {
     const pageSize = typeof page_size === "number" ? page_size : 50;
+    cleanupCapabilitySnapshots();
     if (typeof cursor === "string") {
       const page = readCursorPage("doctor", cursor, pageSize);
       if (!page.ok) {
@@ -1835,6 +2049,12 @@ server.registerTool(
     }
 
     const enabledLanguages = Object.keys(config.languages).filter((lang) => config.languages[lang]?.enabled);
+    const inputSnapshot = readCapabilitySnapshot(capability_snapshot_id || null);
+    let capabilitySnapshotStatus: "none" | "reused" | "created" | "invalid_or_expired" = "none";
+    if (capability_snapshot_id && !inputSnapshot) {
+      capabilitySnapshotStatus = "invalid_or_expired";
+    }
+    let outputCapabilitySnapshotId: string | null = inputSnapshot?.id || null;
     const workspaceDiscovery = workspaceDependencyChecks.language_workspace_discovery as
       | { suggestions: Record<string, string | null> | null; commands: string[]; current_overrides?: Record<string, string | null> }
       | undefined;
@@ -1926,7 +2146,19 @@ server.registerTool(
       return `hover(file='${sampleFile}', line=1, column=1)`;
     };
     const featureCapabilityMatrix: Record<string, any> = {};
-    for (const lang of enabledLanguages) {
+    const canReuseSnapshot =
+      !!inputSnapshot &&
+      !probe_backends &&
+      JSON.stringify([...inputSnapshot.enabledLanguages].sort()) === JSON.stringify([...enabledLanguages].sort());
+    if (canReuseSnapshot && inputSnapshot) {
+      capabilitySnapshotStatus = "reused";
+      for (const lang of enabledLanguages) {
+        featureCapabilityMatrix[lang] = inputSnapshot.featureCapabilityMatrix[lang] || {
+          status: "unknown",
+          note: "Language missing in capability snapshot; rerun doctor(probe_backends=true).",
+        };
+      }
+    } else for (const lang of enabledLanguages) {
       const language = lang as Language;
       const chainWorkspace = (languageCommandChains[language] as { workspace?: string | null } | undefined)?.workspace || null;
       if (!probe_backends) {
@@ -2001,6 +2233,18 @@ server.registerTool(
         };
       }
     }
+    if (probe_backends) {
+      const snapshotId = makeCapabilitySnapshotId(enabledLanguages);
+      capabilitySnapshotStore.set(snapshotId, {
+        id: snapshotId,
+        createdAt: Date.now(),
+        expiresAt: Date.now() + CAPABILITY_SNAPSHOT_TTL_MS,
+        enabledLanguages: [...enabledLanguages],
+        featureCapabilityMatrix,
+      });
+      outputCapabilitySnapshotId = snapshotId;
+      capabilitySnapshotStatus = "created";
+    }
 
     const probeResults: Record<string, any> = {};
     if (probe_backends) {
@@ -2054,6 +2298,9 @@ server.registerTool(
         recommendations.push("Python backend failed before handshake. Run `uv run --directory dist/bundled/python python-lsp-mcp --help` to preinstall runtime dependencies.");
       }
     }
+    if (capabilitySnapshotStatus === "invalid_or_expired") {
+      recommendations.push("Provided capability_snapshot_id is invalid or expired. Run doctor(probe_backends=true) to refresh.");
+    }
     for (const [lang, drift] of Object.entries(backendPackageDrift as Record<string, any>)) {
       if (drift.drift_status === "policy_drift") {
         recommendations.push(`${lang} backend is not using latest update policy. ${drift.next_step}`);
@@ -2073,6 +2320,8 @@ server.registerTool(
       checks,
       activeWorkspacePath,
       backendRuntimeMode: backendRuntimeMode,
+      capability_snapshot_id: outputCapabilitySnapshotId,
+      capability_snapshot_status: capabilitySnapshotStatus,
       enabledLanguages,
       backendPackageDrift,
       backendVersionSummary,
@@ -2118,6 +2367,8 @@ server.registerTool(
       enabledLanguages,
       recommendations_count: recommendations.length,
       command_chains_count: Object.keys(languageCommandChains).length,
+      capability_snapshot_id: outputCapabilitySnapshotId,
+      capability_snapshot_status: capabilitySnapshotStatus,
       backend_version_schema_version: backendVersionSummary.schema_version,
       backend_version_counts: backendVersionSummary.counts,
       item_count: items.length,
@@ -2460,6 +2711,22 @@ function extractReferencesItems(parsed: any): any[] {
 
 function extractReferencesCount(parsed: any, items: any[]): number {
   return typeof parsed?.count === "number" ? parsed.count : items.length;
+}
+
+function extractDiagnosticsItems(parsed: any): Array<Record<string, unknown>> {
+  if (Array.isArray(parsed)) return parsed as Array<Record<string, unknown>>;
+  if (Array.isArray(parsed?.diagnostics)) return parsed.diagnostics as Array<Record<string, unknown>>;
+  return [];
+}
+
+function fingerprintDiagnostic(diag: Record<string, any>): string {
+  const file = String(diag.file || diag.path || "");
+  const line = Number(diag.line ?? diag?.range?.start?.line ?? -1);
+  const column = Number(diag.column ?? diag?.range?.start?.character ?? -1);
+  const severity = String(diag.severity || "");
+  const code = String(diag.code || "");
+  const message = String(diag.message || "");
+  return `${file}|${line}|${column}|${severity}|${code}|${message}`;
 }
 
 function isInlayHintUnsupportedError(errorText: string): boolean {
