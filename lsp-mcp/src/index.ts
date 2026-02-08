@@ -110,6 +110,48 @@ function resolveLikelyBundledBackendPath(name: string): string | null {
   return candidates[0] || null;
 }
 
+type BenchmarkCaseSnapshot = {
+  id: string;
+  tool: string;
+  latency_ms: number;
+  result_size: number;
+  ok: boolean;
+  error_code: string | null;
+  confidence: number | null;
+  truncated: boolean;
+  cursor_available: boolean;
+};
+
+type BenchmarkReportSnapshot = {
+  schema_version: number;
+  generated_at: string;
+  workspace_root?: string;
+  cases: BenchmarkCaseSnapshot[];
+  summary?: {
+    total_cases: number;
+    ok_cases: number;
+    error_cases: number;
+    total_latency_ms: number;
+  };
+};
+
+function loadLatestBenchmarkReport(): { found: boolean; path: string; report: BenchmarkReportSnapshot | null; error?: string } {
+  const configured = process.env.LSP_MCP_BENCHMARK_REPORT_PATH || ".tmp/benchmark-latest.json";
+  const reportPath = path.isAbsolute(configured) ? configured : path.resolve(process.cwd(), configured);
+  if (!fs.existsSync(reportPath)) {
+    return { found: false, path: reportPath, report: null };
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(reportPath, "utf8")) as BenchmarkReportSnapshot;
+    if (!parsed || !Array.isArray(parsed.cases)) {
+      return { found: false, path: reportPath, report: null, error: "invalid benchmark report schema" };
+    }
+    return { found: true, path: reportPath, report: parsed };
+  } catch (error) {
+    return { found: false, path: reportPath, report: null, error: String(error) };
+  }
+}
+
 function resolveBackendRuntimeMode(): "registry" | "bundled" | "auto" {
   const requireBundled = (process.env.LSP_MCP_REQUIRE_BUNDLED_BACKENDS ?? "false").toLowerCase() === "true";
   if (requireBundled) return "bundled";
@@ -1518,6 +1560,7 @@ server.registerTool(
       line: z.number().int().positive(),
       column: z.number().int().positive(),
       mode: z.enum(["fast", "deep"]).default("deep").optional(),
+      strategy: z.enum(["balanced", "definition_first", "references_first"]).default("balanced").optional(),
       query: z.string().optional(),
       page_size: z.number().int().positive().max(200).default(20).optional(),
       hint_start_line: z.number().int().positive().default(1).optional(),
@@ -1525,9 +1568,11 @@ server.registerTool(
       reference_preview: z.number().int().positive().max(200).default(20).optional(),
     },
   },
-  async ({ file, line, column, mode, query, page_size, hint_start_line, hint_max_lines, reference_preview }) => {
+  async ({ file, line, column, mode, strategy, query, page_size, hint_start_line, hint_max_lines, reference_preview }) => {
     const startedAt = Date.now();
     const navigateMode: "fast" | "deep" = mode === "fast" ? "fast" : "deep";
+    const navigateStrategy: "balanced" | "definition_first" | "references_first" =
+      strategy === "definition_first" || strategy === "references_first" ? strategy : "balanced";
     const absFile = path.isAbsolute(file)
       ? file
       : (activeWorkspacePath ? path.join(activeWorkspacePath, file) : path.resolve(file));
@@ -1633,7 +1678,10 @@ server.registerTool(
       }
     };
 
+    const stepOrder: string[] = [];
+
     if (typeof query === "string" && query.trim().length > 0) {
+      stepOrder.push("search");
       const searchRes = await runStep("search", "search", {
         pattern: query.trim(),
         path: workspace,
@@ -1651,13 +1699,31 @@ server.registerTool(
       }
     }
 
-    const definitionRes = await runStep("definition", "definition", { file: absFile, line, column });
-    const referencesRes = await runStep("references", "references", {
-      file: absFile,
-      line,
-      column,
-      page_size: typeof reference_preview === "number" ? reference_preview : (navigateMode === "fast" ? 10 : 20),
-    });
+    let definitionRes: { ok: boolean; payload: Record<string, unknown> } = { ok: false, payload: {} };
+    let referencesRes: { ok: boolean; payload: Record<string, unknown> } = { ok: false, payload: {} };
+    const runDefinition = async () => {
+      stepOrder.push("definition");
+      definitionRes = await runStep("definition", "definition", { file: absFile, line, column });
+    };
+    const runReferences = async () => {
+      stepOrder.push("references");
+      referencesRes = await runStep("references", "references", {
+        file: absFile,
+        line,
+        column,
+        page_size: typeof reference_preview === "number" ? reference_preview : (navigateMode === "fast" ? 10 : 20),
+      });
+    };
+    if (navigateStrategy === "references_first") {
+      await runReferences();
+      await runDefinition();
+    } else if (navigateStrategy === "definition_first") {
+      await runDefinition();
+      await runReferences();
+    } else {
+      await runDefinition();
+      await runReferences();
+    }
     let hintsRes: { ok: boolean; payload: Record<string, unknown> } = { ok: false, payload: {} };
     const runHints = navigateMode === "deep" || typeof hint_start_line === "number" || typeof hint_max_lines === "number";
     if (runHints) {
@@ -1697,6 +1763,7 @@ server.registerTool(
       tool: "semantic_navigate",
       strict_mode: true,
       mode: navigateMode,
+      strategy: navigateStrategy,
       file: absFile,
       position: { line, column },
       resolved_language: language,
@@ -1705,6 +1772,8 @@ server.registerTool(
       steps: workflowSteps,
       summary: {
         mode: navigateMode,
+        strategy: navigateStrategy,
+        step_order: stepOrder,
         references_count: referenceCount,
         definition_ok: definitionRes.ok,
         references_ok: referencesRes.ok,
@@ -1731,14 +1800,16 @@ server.registerTool(
       path: z.string(),
       summary_only: z.boolean().default(false).optional(),
       preview_limit: z.number().int().positive().default(100).optional(),
+      hotspot_limit: z.number().int().positive().max(50).default(5).optional(),
       severity: z.enum(["error", "warning", "information", "hint"]).optional(),
       source: z.string().optional(),
       page_size: z.number().int().positive().max(500).default(100).optional(),
       cursor: z.string().optional(),
     },
   },
-  async ({ path: targetPath, summary_only, preview_limit, severity, source, page_size, cursor }) => {
+  async ({ path: targetPath, summary_only, preview_limit, hotspot_limit, severity, source, page_size, cursor }) => {
     const pageSize = typeof page_size === "number" ? page_size : 100;
+    const hotspotLimit = typeof hotspot_limit === "number" ? hotspot_limit : 5;
     if (typeof cursor === "string") {
       const page = readCursorPage("diagnostics_delta", cursor, pageSize);
       if (!page.ok) {
@@ -1887,6 +1958,71 @@ server.registerTool(
         ...filteredAdded.map((diag) => ({ kind: "added" as const, diagnostic: diag })),
         ...filteredRemoved.map((diag) => ({ kind: "removed" as const, diagnostic: diag })),
       ];
+      const resolveDiagFile = (diag: Record<string, unknown>): string => {
+        const file = String(diag.file || diag.path || "").trim();
+        if (file.length > 0) return file;
+        const uri = String(diag.uri || "").trim();
+        if (uri.startsWith("file://")) {
+          try { return decodeURIComponent(uri.replace("file://", "")); } catch { return uri; }
+        }
+        return absPath;
+      };
+      const resolveDiagSeverity = (diag: Record<string, unknown>): string => {
+        const code = Number(diag.severity ?? 0);
+        if (code === 1) return "error";
+        if (code === 2) return "warning";
+        if (code === 3) return "information";
+        if (code === 4) return "hint";
+        return "unknown";
+      };
+      const fileSummaryMap = new Map<string, {
+        file: string;
+        current_count: number;
+        added_count: number;
+        removed_count: number;
+        by_severity: Record<string, number>;
+      }>();
+      for (const diag of diagnostics) {
+        const file = resolveDiagFile(diag);
+        const sev = resolveDiagSeverity(diag);
+        const row = fileSummaryMap.get(file) || {
+          file,
+          current_count: 0,
+          added_count: 0,
+          removed_count: 0,
+          by_severity: {},
+        };
+        row.current_count += 1;
+        row.by_severity[sev] = (row.by_severity[sev] || 0) + 1;
+        fileSummaryMap.set(file, row);
+      }
+      for (const diag of filteredAdded) {
+        const file = resolveDiagFile(diag);
+        const row = fileSummaryMap.get(file) || {
+          file,
+          current_count: 0,
+          added_count: 0,
+          removed_count: 0,
+          by_severity: {},
+        };
+        row.added_count += 1;
+        fileSummaryMap.set(file, row);
+      }
+      for (const diag of filteredRemoved) {
+        const file = resolveDiagFile(diag);
+        const row = fileSummaryMap.get(file) || {
+          file,
+          current_count: 0,
+          added_count: 0,
+          removed_count: 0,
+          by_severity: {},
+        };
+        row.removed_count += 1;
+        fileSummaryMap.set(file, row);
+      }
+      const file_summary = Array.from(fileSummaryMap.values())
+        .sort((a, b) => (b.current_count + b.added_count) - (a.current_count + a.added_count));
+      const top_hotspots = file_summary.slice(0, hotspotLimit);
 
       diagnosticsDeltaStore.set(cacheKey, {
         updatedAt: Date.now(),
@@ -1903,6 +2039,8 @@ server.registerTool(
               removed_count: filteredRemoved.length,
               baseline_created: !previous,
               baseline_updated_at: previous?.updatedAt ?? null,
+              file_summary,
+              top_hotspots,
               filters: {
                 severity: severity ?? null,
                 source: source ?? null,
@@ -1928,7 +2066,10 @@ server.registerTool(
           changes_page: deltaChanges.slice(0, limit),
           baseline_created: !previous,
           baseline_updated_at: previous?.updatedAt ?? null,
+          file_summary,
+          top_hotspots,
           filters: {
+            hotspot_limit: hotspotLimit,
             severity: severity ?? null,
             source: source ?? null,
           },
@@ -2029,6 +2170,47 @@ server.registerTool(
       uv: checkCommand("uv"),
       bun: checkCommand("bun"),
     };
+    const latestBenchmark = loadLatestBenchmarkReport();
+    const benchmarkInsights = (() => {
+      if (!latestBenchmark.found || !latestBenchmark.report) {
+        return {
+          found: false,
+          path: latestBenchmark.path,
+          error: latestBenchmark.error || null,
+          next_step: `Run \`bun run benchmark:report\` to generate ${latestBenchmark.path}.`,
+        };
+      }
+      const report = latestBenchmark.report;
+      const cases = Array.isArray(report.cases) ? report.cases : [];
+      const slowCases = [...cases]
+        .filter((c) => typeof c.latency_ms === "number" && c.latency_ms >= 1200)
+        .sort((a, b) => b.latency_ms - a.latency_ms)
+        .slice(0, 5);
+      const errorCases = cases.filter((c) => !c.ok);
+      const tokenHeavyCases = cases.filter((c) => c.truncated || c.cursor_available || c.result_size > 400);
+      const totalLatency = report.summary?.total_latency_ms ?? cases.reduce((sum, c) => sum + (Number(c.latency_ms) || 0), 0);
+      const budgetStatus = errorCases.length > 0
+        ? "degraded"
+        : totalLatency > 6000
+          ? "high_latency"
+          : "healthy";
+      return {
+        found: true,
+        path: latestBenchmark.path,
+        generated_at: report.generated_at,
+        total_cases: report.summary?.total_cases ?? cases.length,
+        ok_cases: report.summary?.ok_cases ?? cases.filter((c) => c.ok).length,
+        error_cases: report.summary?.error_cases ?? errorCases.length,
+        total_latency_ms: totalLatency,
+        budget_status: budgetStatus,
+        slow_cases: slowCases,
+        token_heavy_cases: tokenHeavyCases.slice(0, 5),
+        recommended_mode: totalLatency > 6000 ? "semantic_navigate(mode='fast')" : "semantic_navigate(mode='deep')",
+        next_step: errorCases.length > 0
+          ? "Investigate failed benchmark cases before trusting semantic automation."
+          : "Use slow_cases and token_heavy_cases to set default mode/strategy for LLM workflows.",
+      };
+    })();
 
     const backendPackages = getBackendPackages(config).filter((pkg) => config.languages[pkg.language]?.enabled);
     const backendRuntimeMode = resolveBackendRuntimeMode();
@@ -2562,6 +2744,15 @@ server.registerTool(
     if (!checks.npx.available) recommendations.push("Ensure npm/npx is available in PATH.");
     if (!checks.uv.available && config.languages.python?.enabled) recommendations.push("Install uv for Python backend support.");
     if (!checks.bun.available) recommendations.push("Install Bun if you run this server from source.");
+    if (!benchmarkInsights.found) {
+      recommendations.push(`Benchmark report not found. ${benchmarkInsights.next_step}`);
+    } else {
+      if (benchmarkInsights.budget_status === "degraded") {
+        recommendations.push("Latest benchmark has failing cases; prioritize fixing those before enabling aggressive semantic automation.");
+      } else if (benchmarkInsights.budget_status === "high_latency") {
+        recommendations.push("Latest benchmark latency is high; prefer semantic_navigate(mode='fast') and narrower page_size defaults.");
+      }
+    }
     if (config.languages.vue?.enabled && activeWorkspacePath) {
       const missing = (vueChecks?.projects || []).filter((p) => !p.ok);
       if (missing.length > 0) {
@@ -2638,6 +2829,7 @@ server.registerTool(
       enabledLanguages,
       backendPackageDrift,
       backendVersionSummary,
+      benchmarkInsights,
       workspaceDependencyChecks,
       languageCommandChains,
       backendCommands,
@@ -2652,6 +2844,7 @@ server.registerTool(
     for (const [name, check] of Object.entries(checks)) {
       items.push({ kind: "runtime_check", key: name, value: check });
     }
+    items.push({ kind: "benchmark_insight", key: "latest", value: benchmarkInsights });
     for (const [name, depCheck] of Object.entries(workspaceDependencyChecks)) {
       items.push({ kind: "workspace_dependency", key: name, value: depCheck });
     }
@@ -2684,6 +2877,8 @@ server.registerTool(
       capability_snapshot_status: capabilitySnapshotStatus,
       backend_version_schema_version: backendVersionSummary.schema_version,
       backend_version_counts: backendVersionSummary.counts,
+      benchmark_found: !!benchmarkInsights.found,
+      benchmark_budget_status: benchmarkInsights.budget_status || "unknown",
       item_count: items.length,
     };
     const doctorCursor = makeCursor("doctor", items, items.length, doctorSummary);

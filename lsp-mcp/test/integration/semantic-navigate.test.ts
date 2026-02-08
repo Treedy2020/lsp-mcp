@@ -59,4 +59,28 @@ describe("Semantic Navigate", () => {
     expect(result.steps?.references).toBeDefined();
     expect(result.steps?.read_file_with_hints?.status).toBe("skipped");
   }, 60000);
+
+  it("should support strategy ordering", async () => {
+    const definitionFirst = await client.callTool("semantic_navigate", {
+      file: "packages/zod/src/v4/core/util.ts",
+      line: 218,
+      column: 25,
+      mode: "fast",
+      strategy: "definition_first",
+    });
+    const referencesFirst = await client.callTool("semantic_navigate", {
+      file: "packages/zod/src/v4/core/util.ts",
+      line: 218,
+      column: 25,
+      mode: "fast",
+      strategy: "references_first",
+    });
+
+    expect(definitionFirst.strategy).toBe("definition_first");
+    expect(referencesFirst.strategy).toBe("references_first");
+    expect(Array.isArray(definitionFirst.summary?.step_order)).toBe(true);
+    expect(Array.isArray(referencesFirst.summary?.step_order)).toBe(true);
+    expect(definitionFirst.summary.step_order[0]).toBe("definition");
+    expect(referencesFirst.summary.step_order[0]).toBe("references");
+  }, 60000);
 });

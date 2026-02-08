@@ -148,9 +148,38 @@ async function main() {
         args: { file: path.join(vitesseRoot, "src/components/TheFooter.vue"), line: 21, column: 63 },
       },
       {
-        id: "semantic_navigate",
+        id: "semantic_navigate_balanced_deep",
         tool: "semantic_navigate",
-        args: { file: "packages/zod/src/v4/core/util.ts", line: 218, column: 25, query: "jsonStringifyReplacer" },
+        args: {
+          file: "packages/zod/src/v4/core/util.ts",
+          line: 218,
+          column: 25,
+          query: "jsonStringifyReplacer",
+          mode: "deep",
+          strategy: "balanced",
+        },
+      },
+      {
+        id: "semantic_navigate_definition_first_fast",
+        tool: "semantic_navigate",
+        args: {
+          file: "packages/zod/src/v4/core/util.ts",
+          line: 218,
+          column: 25,
+          mode: "fast",
+          strategy: "definition_first",
+        },
+      },
+      {
+        id: "semantic_navigate_references_first_fast",
+        tool: "semantic_navigate",
+        args: {
+          file: "packages/zod/src/v4/core/util.ts",
+          line: 218,
+          column: 25,
+          mode: "fast",
+          strategy: "references_first",
+        },
       },
       {
         id: "diagnostics_delta_first",

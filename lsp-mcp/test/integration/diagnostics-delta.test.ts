@@ -51,11 +51,16 @@ describe("Diagnostics Delta", () => {
       severity: "error",
       source: "typescript",
       preview_limit: 1,
+      hotspot_limit: 3,
       page_size: 1,
     });
     expect(filtered.tool).toBe("diagnostics_delta");
     expect(filtered.delta.filters.severity).toBe("error");
     expect(filtered.delta.filters.source).toBe("typescript");
+    expect(filtered.delta.filters.hotspot_limit).toBe(3);
+    expect(Array.isArray(filtered.delta.file_summary)).toBe(true);
+    expect(Array.isArray(filtered.delta.top_hotspots)).toBe(true);
+    expect(filtered.delta.top_hotspots.length).toBeLessThanOrEqual(3);
     expect(Array.isArray(filtered.delta.changes_page)).toBe(true);
     expect(filtered.delta.added_count).toBeGreaterThanOrEqual(0);
     expect(typeof filtered.cursor_available).toBe("boolean");

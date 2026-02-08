@@ -89,6 +89,9 @@
 - [x] Standardized strict semantic responses with `recovery_plan` and cost fields (`latency_ms`, `result_size`, `truncated`, `cursor_available`).
 - [x] Added `semantic_navigate` composite tool (search -> definition -> references -> read_file_with_hints) and benchmark coverage.
 - [x] Added `semantic_navigate` execution modes (`deep` default, `fast` lightweight) for latency/token control.
+- [x] Added `semantic_navigate` strategy control (`balanced|definition_first|references_first`) with step-order metadata.
+- [x] Added `diagnostics_delta` per-file aggregation (`file_summary`, `top_hotspots`) for large diagnostics payload triage.
+- [x] Added `doctor.benchmarkInsights` to consume latest benchmark JSON and emit actionable budget recommendations.
 - [x] Added `doctor.capability_snapshot_id` reuse path to avoid repeated capability probing.
 - [x] Added `diagnostics_delta` incremental diagnostics tool to reduce repeated large diagnostics payload reads.
 - [x] Added semantic `confidence` / `confidence_reason` hints for fallback and strict error cases.

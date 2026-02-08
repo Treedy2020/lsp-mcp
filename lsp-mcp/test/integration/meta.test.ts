@@ -115,6 +115,10 @@ describe("Meta Tools", () => {
     expect(result.backendVersionSummary.counts.languages).toBeGreaterThan(0);
     expect(result.backendVersionSummary.lookup_stats.cache_ttl_ms).toBeGreaterThan(0);
     expect(["registry", "auto", "bundled"]).toContain(result.backendRuntimeMode);
+    expect(result.benchmarkInsights).toBeDefined();
+    expect(typeof result.benchmarkInsights.found).toBe("boolean");
+    expect(typeof result.benchmarkInsights.path).toBe("string");
+    expect(typeof result.benchmarkInsights.next_step).toBe("string");
     expect(result.workspaceDependencyChecks).toBeDefined();
     expect(result.workspaceDependencyChecks.language_workspace_discovery).toBeDefined();
     expect(result.workspaceDependencyChecks.language_command_chains).toBeDefined();

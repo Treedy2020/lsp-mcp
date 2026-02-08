@@ -53,6 +53,7 @@ Use these directly; language is inferred from file/path:
 - Hinting: `inlay_hints`, `inlay_hint_resolve`, `read_file_with_hints`
 - Composite semantic workflow: `semantic_navigate` (optional search -> definition -> references -> read_file_with_hints)
   - `mode='deep'` (default) runs full workflow; `mode='fast'` skips heavy hint reads unless explicitly requested
+  - `strategy='balanced'|'definition_first'|'references_first'` controls step ordering for latency/recall tradeoffs
 - Incremental diagnostics: `diagnostics_delta` (delta vs previous diagnostics snapshot)
 - Editing support: `completions`, `signature_help`, `prepare_rename`, `rename`, `code_action`, `run_code_action`, `code_lens`
 - Analysis: `diagnostics`, `git_diagnostics`, `symbols`, `search`, `summarize_file`, `read_file_with_hints`, `project_structure`
@@ -67,7 +68,8 @@ For large repos, use preview arguments to reduce token usage:
 
 - `search` / `workspace_symbol`: `preview_limit` or `page_size` (default `200`), plus `cursor` for next page
 - `diagnostics`: `preview_limit` or `page_size` (default `200`), `summary_only` (default `false`), plus `cursor`
-- `diagnostics_delta`: `preview_limit`/`page_size` plus optional `severity` and `source` filters, and `cursor` for paged change items
+- `diagnostics_delta`: `preview_limit`/`page_size` plus optional `severity`, `source`, `hotspot_limit` filters, and `cursor` for paged change items
+  - Returns `delta.file_summary[]` and `delta.top_hotspots[]` for per-file triage in large workspaces
 - `doctor`: `page_size` (default `50`) plus `cursor` for long environment reports
 - `doctor`: set `check_latest_versions=true` to probe registry latest version drift (slower, network-dependent)
 - `doctor`: use `capability_snapshot_id` to reuse probed capability matrix and skip repeated backend capability probing
@@ -132,6 +134,7 @@ Strict semantic error shape (example):
 - `doctor` includes `backendPackageDrift` to show installed backend version vs latest policy and upgrade next steps.
 - `doctor` includes `backendVersionSummary` (stable schema with `schema_version`, `counts`, `by_language`, `lookup_stats`) for quick LLM triage.
 - `doctor` includes `workspaceDependencyChecks.python_bundled_runtime` in bundled mode, with optional executable probe results when `probe_backends=true`.
+- `doctor` includes `benchmarkInsights` from the latest benchmark report (`.tmp/benchmark-latest.json` by default) for runtime budget recommendations.
 
 Example fields exposed for client/LLM orchestration:
 
