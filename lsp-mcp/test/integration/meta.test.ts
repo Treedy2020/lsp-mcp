@@ -109,6 +109,17 @@ describe("Meta Tools", () => {
     expect(Array.isArray(result.languageCommandChains.typescript.commands)).toBe(true);
     expect(result.languageCommandChains.typescript.commands.length).toBeGreaterThan(0);
     expect(Array.isArray(result.recommendations)).toBe(true);
+    expect(result.featureCapabilityMatrix).toBeDefined();
+    expect(result.featureCapabilityMatrix.typescript?.probe_required).toBe(true);
+  });
+
+  it("should expose doctor feature capability matrix when probing backends", async () => {
+    const result = await client.callTool("doctor", { probe_backends: true });
+    expect(result.featureCapabilityMatrix).toBeDefined();
+    expect(result.featureCapabilityMatrix.typescript).toBeDefined();
+    expect(result.featureCapabilityMatrix.typescript.features).toBeDefined();
+    expect(result.featureCapabilityMatrix.typescript.features.semantic_tokens).toBe("supported");
+    expect(["supported", "not_supported"]).toContain(result.featureCapabilityMatrix.python.features.semantic_tokens);
   });
 
   it("should support doctor pagination via expand_result", async () => {

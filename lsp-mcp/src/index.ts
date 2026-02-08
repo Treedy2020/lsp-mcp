@@ -1230,6 +1230,46 @@ server.registerTool(
       })
     );
 
+    const llmFeatureTargets = [
+      "semantic_tokens",
+      "linked_editing_range",
+      "moniker",
+      "inlay_hint_resolve",
+      "read_file_with_hints",
+      "call_hierarchy",
+    ] as const;
+    const featureCapabilityMatrix: Record<string, any> = {};
+    for (const lang of enabledLanguages) {
+      if (!probe_backends) {
+        featureCapabilityMatrix[lang] = {
+          probe_required: true,
+          status: "unknown",
+          next_step: "Call doctor(probe_backends=true) to fetch per-language feature capabilities.",
+        };
+        continue;
+      }
+      try {
+        const tools = await backendManager.getTools(lang as Language);
+        const toolSet = new Set(tools.map((t) => t.name));
+        const features = Object.fromEntries(
+          llmFeatureTargets.map((name) => [
+            name,
+            toolSet.has(name) ? "supported" : "not_supported",
+          ])
+        );
+        featureCapabilityMatrix[lang] = {
+          status: "ok",
+          tool_count: tools.length,
+          features,
+        };
+      } catch (error) {
+        featureCapabilityMatrix[lang] = {
+          status: "error",
+          error: String(error),
+        };
+      }
+    }
+
     const probeResults: Record<string, any> = {};
     if (probe_backends) {
       for (const lang of enabledLanguages) {
@@ -1299,6 +1339,7 @@ server.registerTool(
       workspaceDependencyChecks,
       languageCommandChains,
       backendCommands,
+      featureCapabilityMatrix,
       probe_backends: !!probe_backends,
       probeResults: probe_backends ? probeResults : undefined,
       recommendations,
@@ -1316,6 +1357,9 @@ server.registerTool(
     }
     for (const [lang, command] of Object.entries(backendCommands)) {
       items.push({ kind: "backend_command", key: lang, value: command });
+    }
+    for (const [lang, matrix] of Object.entries(featureCapabilityMatrix)) {
+      items.push({ kind: "feature_capability", key: lang, value: matrix });
     }
     for (const [lang, drift] of Object.entries(backendPackageDrift as Record<string, unknown>)) {
       items.push({ kind: "backend_package_drift", key: lang, value: drift });

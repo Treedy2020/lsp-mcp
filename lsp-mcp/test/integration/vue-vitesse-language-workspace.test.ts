@@ -78,4 +78,20 @@ describe("Vue Language Workspace", () => {
       if (fs.existsSync(testFile)) fs.unlinkSync(testFile);
     }
   }, 120000);
+
+  it("should return semantic tokens or strict NOT_IMPLEMENTED for Vue workspace", async () => {
+    await client.callTool("switch_workspace_for_language", {
+      language: "vue",
+      path: WORKSPACE_ROOT,
+    });
+    const result = await client.callTool("semantic_tokens", {
+      file: FOOTER_FILE,
+    });
+    if (result.error_code === "NOT_IMPLEMENTED") {
+      expect(result.strict_mode).toBe(true);
+      return;
+    }
+    expect(result.error).toBeUndefined();
+    expect(Array.isArray(result.tokens)).toBe(true);
+  }, 120000);
 });
