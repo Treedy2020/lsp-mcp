@@ -141,6 +141,7 @@ const SEMANTIC_TOOL_NAMES = new Set([
   "prepare_rename",
   "signature_help",
   "read_file_with_hints",
+  "semantic_navigate",
   "peek_definition",
   "code_action",
   "update_document",
@@ -156,6 +157,12 @@ function isSemanticTool(toolName: string): boolean {
 
 function semanticWorkspaceRequiredResponse(language: Language, toolName: string) {
   const setupCommand = `switch_workspace_for_language(language='${language}', path='/abs/project/root')`;
+  const recoveryPlan = [{
+    step: 1,
+    action: "set_language_workspace",
+    command: setupCommand,
+    reason: "Semantic tools require an explicit per-language workspace mapping.",
+  }];
   return {
     content: [{
       type: "text" as const,
@@ -171,11 +178,63 @@ function semanticWorkspaceRequiredResponse(language: Language, toolName: string)
         required_workspace_scope: "language",
         next_step: `Call ${setupCommand} before using semantic tools.`,
         install_commands: [setupCommand],
+        recovery_plan: recoveryPlan,
         missing_packages: [],
         resolved_workspace: null,
         backend_instance_id: null,
+        result_size: 0,
+        cursor_available: false,
+        truncated: false,
+        latency_ms: null,
       }),
     }],
+  };
+}
+
+function buildRecoveryPlan(installCommands: string[], nextStep: string): Array<{ step: number; action: string; command: string; reason: string }> {
+  const normalized = Array.from(new Set(
+    installCommands
+      .map((command) => String(command || "").trim())
+      .filter((command) => command.length > 0)
+  ));
+  if (normalized.length === 0 && nextStep.trim().length > 0) {
+    normalized.push(nextStep.trim());
+  }
+  return normalized.map((command, idx) => ({
+    step: idx + 1,
+    action: idx === 0 ? "run_next_step" : "retry_with_followup",
+    command,
+    reason: "Follow this command sequence to recover from strict semantic errors.",
+  }));
+}
+
+function inferResponseResultSize(payload: Record<string, unknown>): number {
+  if (typeof payload.count === "number" && Number.isFinite(payload.count)) return payload.count;
+  const arrayKeys = ["matches", "references", "diagnostics", "lines", "symbols", "hints"];
+  for (const key of arrayKeys) {
+    if (Array.isArray(payload[key])) return payload[key].length;
+  }
+  if (typeof payload.result === "string") return payload.result.length;
+  return 0;
+}
+
+function withStandardCostFields(payload: Record<string, unknown>): Record<string, unknown> {
+  const page = payload.page && typeof payload.page === "object" ? payload.page as Record<string, unknown> : null;
+  const preview = payload.preview && typeof payload.preview === "object" ? payload.preview as Record<string, unknown> : null;
+  const hasCursor = (
+    (payload.next && typeof payload.next === "object" && !!(payload.next as Record<string, any>)?.arguments?.cursor) ||
+    (page && page.has_more === true)
+  );
+  const truncated = (
+    (preview && preview.truncated === true) ||
+    (page && page.has_more === true)
+  );
+  return {
+    ...payload,
+    result_size: typeof payload.result_size === "number" ? payload.result_size : inferResponseResultSize(payload),
+    cursor_available: typeof payload.cursor_available === "boolean" ? payload.cursor_available : !!hasCursor,
+    truncated: typeof payload.truncated === "boolean" ? payload.truncated : !!truncated,
+    latency_ms: typeof payload.latency_ms === "number" ? payload.latency_ms : null,
   };
 }
 
@@ -215,18 +274,22 @@ function normalizeSemanticErrorPayload(
   const missingPackages = Array.isArray(payload.missing_packages)
     ? payload.missing_packages
     : [];
+  const recoveryPlan = Array.isArray(payload.recovery_plan)
+    ? payload.recovery_plan
+    : buildRecoveryPlan(installCommands.map((cmd) => String(cmd)), nextStep);
 
-  return {
+  return withStandardCostFields({
     ...payload,
     error_code: normalizedCode,
     strict_mode: payload.strict_mode ?? true,
     next_step: nextStep,
     install_commands: installCommands,
+    recovery_plan: recoveryPlan,
     missing_packages: missingPackages,
     tool: payload.tool ?? toolName,
     resolved_language: payload.resolved_language ?? resolvedLanguage ?? null,
     resolved_workspace: payload.resolved_workspace ?? resolvedWorkspace ?? null,
-  };
+  });
 }
 
 function withSemanticContext(
@@ -260,16 +323,21 @@ function withSemanticContext(
         }],
       };
     }
+    const parsedRecord = parsed as Record<string, unknown>;
+    const parsedResolvedLanguage =
+      (typeof parsedRecord.resolved_language === "string" ? parsedRecord.resolved_language : null) ||
+      (typeof parsedRecord.language === "string" ? parsedRecord.language : null) ||
+      effectiveLanguage;
     return {
       content: [{
         type: "text",
         text: JSON.stringify({
-          ...normalizeSemanticErrorPayload(
-            parsed,
+          ...withStandardCostFields(normalizeSemanticErrorPayload(
+            parsedRecord,
             toolName,
-            parsed.resolved_language ?? parsed.language ?? effectiveLanguage,
+            parsedResolvedLanguage as Language | "multi" | null,
             resolvedWorkspace
-          ),
+          )),
           resolved_language: parsed.resolved_language ?? parsed.language ?? effectiveLanguage,
           resolved_workspace: resolvedWorkspace,
           backend_instance_id: backendInstanceId,
@@ -285,6 +353,10 @@ function withSemanticContext(
           resolved_language: effectiveLanguage,
           resolved_workspace: resolvedWorkspace,
           backend_instance_id: backendInstanceId,
+          result_size: typeof first.text === "string" ? first.text.length : 0,
+          cursor_available: false,
+          truncated: false,
+          latency_ms: null,
         }),
       }],
     };
@@ -1223,6 +1295,199 @@ server.registerTool(
           next_step: success ? commands[commands.length - 1] : (installCommands[0] || commands[0]),
         }),
       }],
+    };
+  }
+);
+
+server.registerTool(
+  "semantic_navigate",
+  {
+    description: "Run an LLM-oriented semantic workflow in one call: optional search -> definition -> references -> read_file_with_hints.",
+    inputSchema: {
+      file: z.string(),
+      line: z.number().int().positive(),
+      column: z.number().int().positive(),
+      query: z.string().optional(),
+      page_size: z.number().int().positive().max(200).default(20).optional(),
+      hint_start_line: z.number().int().positive().default(1).optional(),
+      hint_max_lines: z.number().int().positive().max(400).default(120).optional(),
+      reference_preview: z.number().int().positive().max(200).default(20).optional(),
+    },
+  },
+  async ({ file, line, column, query, page_size, hint_start_line, hint_max_lines, reference_preview }) => {
+    const startedAt = Date.now();
+    const absFile = path.isAbsolute(file)
+      ? file
+      : (activeWorkspacePath ? path.join(activeWorkspacePath, file) : path.resolve(file));
+    const language = inferLanguageFromPath(absFile, config);
+    if (!language) {
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            error: "UNSUPPORTED_FILE_TYPE",
+            error_code: "UNSUPPORTED_FILE_TYPE",
+            message: `Cannot infer language for '${file}'.`,
+            next_step: "Provide a file path with a supported extension.",
+            recovery_plan: [{
+              step: 1,
+              action: "provide_supported_file",
+              command: "semantic_navigate(file='/abs/path/to/file.ts|.py|.vue', line=1, column=1)",
+              reason: "semantic_navigate requires a resolvable source file.",
+            }],
+            strict_mode: true,
+          }),
+        }],
+      };
+    }
+
+    const workspace = getWorkspaceForLanguage(language);
+    if (!workspace) {
+      return semanticWorkspaceRequiredResponse(language, "semantic_navigate");
+    }
+
+    const singletonLock = await ensureBackendSingleton(language, workspace);
+    if (!singletonLock.ok) {
+      return withSemanticContext(singletonLock.response, "semantic_navigate", workspace, null, language);
+    }
+    const proxyHost = singletonLock.proxyHost;
+    const proxyPort = singletonLock.proxyPort;
+    const backendInstanceId =
+      proxyHost && proxyPort
+        ? `proxy:${language}@${proxyHost}:${proxyPort}`
+        : (backendManager.getBackendIdentity(language)?.instanceId ?? null);
+    const callBackendTool = (toolName: string, backendArgs: Record<string, unknown>) => {
+      if (proxyHost && proxyPort) {
+        return callRemoteBackendTool(proxyHost, proxyPort, language, toolName, backendArgs, workspace);
+      }
+      return backendManager.callTool(language, toolName, backendArgs);
+    };
+
+    if (!proxyHost && !proxyPort && !startedBackends.has(language)) {
+      await backendManager.getBackend(language);
+      startedBackends.add(language);
+      await backendManager.callTool(language, "switch_workspace", { path: workspace });
+    }
+
+    const parseToolPayload = (response: { content: Array<{ type: "text"; text: string }> }) => {
+      const text = response.content?.[0]?.text ?? "{}";
+      try {
+        return JSON.parse(text);
+      } catch {
+        return { result: text };
+      }
+    };
+
+    const workflowSteps: Record<string, unknown> = {};
+    const runStep = async (
+      stepName: string,
+      toolName: string,
+      toolArgs: Record<string, unknown>,
+      fallbackResult: Record<string, unknown> = {}
+    ) => {
+      const stepStarted = Date.now();
+      try {
+        const payload = parseToolPayload(await callBackendTool(toolName, toolArgs));
+        if (payload && typeof payload === "object" && payload.error) {
+          workflowSteps[stepName] = {
+            status: "error",
+            tool: toolName,
+            latency_ms: Date.now() - stepStarted,
+            error: payload.error,
+            error_code: payload.error_code || "STEP_ERROR",
+            next_step: payload.next_step || `Retry ${toolName}.`,
+          };
+          return { ok: false, payload };
+        }
+        workflowSteps[stepName] = {
+          status: "ok",
+          tool: toolName,
+          latency_ms: Date.now() - stepStarted,
+          ...(payload || fallbackResult),
+        };
+        return { ok: true, payload };
+      } catch (error) {
+        workflowSteps[stepName] = {
+          status: "error",
+          tool: toolName,
+          latency_ms: Date.now() - stepStarted,
+          error: String(error),
+          error_code: "STEP_EXCEPTION",
+        };
+        return { ok: false, payload: { error: String(error), error_code: "STEP_EXCEPTION" } };
+      }
+    };
+
+    if (typeof query === "string" && query.trim().length > 0) {
+      const searchRes = await runStep("search", "search", {
+        pattern: query.trim(),
+        path: workspace,
+        page_size: typeof page_size === "number" ? page_size : 20,
+      });
+      if (searchRes.ok && searchRes.payload && typeof searchRes.payload === "object") {
+        const items = extractSearchLikeItems(searchRes.payload);
+        workflowSteps.search = {
+          ...(workflowSteps.search as Record<string, unknown>),
+          count: extractSearchLikeCount(searchRes.payload, items),
+          preview: items.slice(0, typeof page_size === "number" ? page_size : 20),
+          cursor_available: !!searchRes.payload?.next?.arguments?.cursor,
+          truncated: !!searchRes.payload?.page?.has_more,
+        };
+      }
+    }
+
+    const definitionRes = await runStep("definition", "definition", { file: absFile, line, column });
+    const referencesRes = await runStep("references", "references", {
+      file: absFile,
+      line,
+      column,
+      page_size: typeof reference_preview === "number" ? reference_preview : 20,
+    });
+    const hintsRes = await runStep("read_file_with_hints", "read_file_with_hints", {
+      file: absFile,
+      start_line: typeof hint_start_line === "number" ? hint_start_line : 1,
+      max_lines: typeof hint_max_lines === "number" ? hint_max_lines : 120,
+    });
+
+    const referencesPayload = referencesRes.payload && typeof referencesRes.payload === "object" ? referencesRes.payload : {};
+    const referenceItems = extractReferencesItems(referencesPayload);
+    const referenceCount = extractReferencesCount(referencesPayload, referenceItems);
+
+    const ok = Boolean(definitionRes.ok || referencesRes.ok || hintsRes.ok);
+    const nextStep = ok
+      ? "Continue with code_action/rename based on references and hints."
+      : `Retry semantic_navigate after running doctor(probe_backends=true) and checking workspace/dependencies for '${language}'.`;
+    const recoveryPlan = ok
+      ? []
+      : buildRecoveryPlan(
+          [`doctor(probe_backends=true, check_latest_versions=true)`, `switch_workspace_for_language(language='${language}', path='${workspace}')`],
+          nextStep
+        );
+    const result = withStandardCostFields({
+      ok,
+      tool: "semantic_navigate",
+      strict_mode: true,
+      file: absFile,
+      position: { line, column },
+      resolved_language: language,
+      resolved_workspace: workspace,
+      backend_instance_id: backendInstanceId,
+      steps: workflowSteps,
+      summary: {
+        references_count: referenceCount,
+        definition_ok: definitionRes.ok,
+        references_ok: referencesRes.ok,
+        hints_ok: hintsRes.ok,
+      },
+      next_step: nextStep,
+      recovery_plan: recoveryPlan,
+      latency_ms: Date.now() - startedAt,
+      result_size: referenceCount,
+      cursor_available: !!(referencesPayload as Record<string, any>)?.next?.arguments?.cursor,
+      truncated: !!(referencesPayload as Record<string, any>)?.page?.has_more,
+    });
+    return {
+      content: [{ type: "text", text: JSON.stringify(result) }],
     };
   }
 );
@@ -2502,6 +2767,7 @@ function buildVueMissingDepsErrorResponse(
     `cd ${installRoot} && yarn add -D typescript @vue/language-server`,
     `cd ${installRoot} && bun add -d typescript @vue/language-server`,
   ];
+  const recoveryPlan = buildRecoveryPlan(installCommands, installCommands[0]);
   return {
     content: [{
       type: "text",
@@ -2515,6 +2781,7 @@ function buildVueMissingDepsErrorResponse(
         strict_mode: VUE_STRICT_SEMANTIC,
         missing_packages: ["typescript", "@vue/language-server"],
         install_commands: installCommands,
+        recovery_plan: recoveryPlan,
         next_step: installCommands[0],
         required_packages: ["typescript", "@vue/language-server"],
         install_example: installCommands[0],

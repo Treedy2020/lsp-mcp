@@ -43,5 +43,10 @@ describe("Language Workspace Requirement", () => {
     expect(result.resolved_language).toBe("typescript");
     expect(result.resolved_workspace).toBeNull();
     expect(result.backend_instance_id).toBeNull();
+    expect(Array.isArray(result.recovery_plan)).toBe(true);
+    expect(String(result.recovery_plan?.[0]?.command || "")).toContain("switch_workspace_for_language");
+    expect(typeof result.result_size).toBe("number");
+    expect(typeof result.cursor_available).toBe("boolean");
+    expect(typeof result.truncated).toBe("boolean");
   });
 });
