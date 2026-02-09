@@ -176,4 +176,94 @@ describe("Python Integration (FastAPI)", () => {
     expect(typeof result.identifier).toBe("string");
     expect(typeof result.source_file).toBe("string");
   }, 60000);
+
+  it("should support implementation/type_definition/prepare_rename/document_highlight", async () => {
+    const implementation = await client.callTool("implementation", {
+      file: "fastapi/applications.py",
+      line: 1226,
+      column: 30,
+    });
+    if (implementation.error_code === "NOT_IMPLEMENTED") {
+      expect(implementation.strict_mode).toBe(true);
+    } else {
+      expect(String(implementation.error || "")).not.toContain("Method not found");
+    }
+
+    const typeDefinition = await client.callTool("type_definition", {
+      file: "fastapi/applications.py",
+      line: 1226,
+      column: 12,
+    });
+    if (typeDefinition.error_code === "NOT_IMPLEMENTED") {
+      expect(typeDefinition.strict_mode).toBe(true);
+    } else {
+      expect(String(typeDefinition.error || "")).not.toContain("Method not found");
+    }
+
+    const prepareRename = await client.callTool("prepare_rename", {
+      file: "fastapi/applications.py",
+      line: 1226,
+      column: 30,
+    });
+    if (prepareRename.error_code === "NOT_IMPLEMENTED") {
+      expect(prepareRename.strict_mode).toBe(true);
+    } else {
+      expect(typeof prepareRename.canRename).toBe("boolean");
+    }
+
+    const highlight = await client.callTool("document_highlight", {
+      file: "fastapi/applications.py",
+      line: 1336,
+      column: 9,
+    });
+    if (highlight.error_code === "NOT_IMPLEMENTED") {
+      expect(highlight.strict_mode).toBe(true);
+    } else {
+      expect(Array.isArray(highlight.highlights)).toBe(true);
+    }
+  }, 60000);
+
+  it("should support selection/folding/link/call hierarchy advanced tools", async () => {
+    const selection = await client.callTool("selection_range", {
+      file: "fastapi/applications.py",
+      line: 1226,
+      column: 30,
+    });
+    if (selection.error_code === "NOT_IMPLEMENTED") {
+      expect(selection.strict_mode).toBe(true);
+    } else {
+      expect(Array.isArray(selection.ranges)).toBe(true);
+    }
+
+    const folding = await client.callTool("folding_range", {
+      file: "fastapi/applications.py",
+    });
+    if (folding.error_code === "NOT_IMPLEMENTED") {
+      expect(folding.strict_mode).toBe(true);
+    } else {
+      expect(Array.isArray(folding.ranges)).toBe(true);
+    }
+
+    const links = await client.callTool("document_link", {
+      file: "fastapi/applications.py",
+    });
+    if (links.error_code === "NOT_IMPLEMENTED") {
+      expect(links.strict_mode).toBe(true);
+    } else {
+      expect(Array.isArray(links.links)).toBe(true);
+    }
+
+    const calls = await client.callTool("call_hierarchy", {
+      file: "fastapi/applications.py",
+      line: 1226,
+      column: 30,
+      direction: "both",
+    });
+    if (calls.error_code === "NOT_IMPLEMENTED") {
+      expect(calls.strict_mode).toBe(true);
+    } else {
+      expect(String(calls.error || "")).not.toContain("Method not found");
+      expect(calls.direction).toBe("both");
+    }
+  }, 60000);
 });

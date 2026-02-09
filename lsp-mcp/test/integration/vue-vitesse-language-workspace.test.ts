@@ -124,4 +124,156 @@ describe("Vue Language Workspace", () => {
       if (fs.existsSync(testFile)) fs.unlinkSync(testFile);
     }
   }, 120000);
+
+  it("should support implementation/type_definition/prepare_rename/document_highlight", async () => {
+    const testFile = path.join(WORKSPACE_ROOT, "src/components/__lsp_advanced_nav_test__.vue");
+    fs.writeFileSync(
+      testFile,
+      [
+        "<script setup lang=\"ts\">",
+        "const sharedName = 'x'",
+        "console.log(sharedName)",
+        "</script>",
+        "",
+      ].join("\n")
+    );
+    try {
+      await client.callTool("switch_workspace_for_language", { language: "vue", path: WORKSPACE_ROOT });
+
+      const implementation = await client.callTool("implementation", {
+        file: testFile,
+        line: 3,
+        column: 14,
+      });
+      if (implementation.error_code === "NOT_IMPLEMENTED") {
+        expect(implementation.strict_mode).toBe(true);
+      } else {
+        expect(String(implementation.error || "")).not.toContain("Method not found");
+      }
+
+      const typeDefinition = await client.callTool("type_definition", {
+        file: testFile,
+        line: 3,
+        column: 14,
+      });
+      if (typeDefinition.error_code === "NOT_IMPLEMENTED") {
+        expect(typeDefinition.strict_mode).toBe(true);
+      } else {
+        expect(String(typeDefinition.error || "")).not.toContain("Method not found");
+      }
+
+      const prepareRename = await client.callTool("prepare_rename", {
+        file: testFile,
+        line: 3,
+        column: 14,
+      });
+      if (prepareRename.error_code === "NOT_IMPLEMENTED") {
+        expect(prepareRename.strict_mode).toBe(true);
+      } else {
+        expect(typeof prepareRename.canRename).toBe("boolean");
+      }
+
+      const highlight = await client.callTool("document_highlight", {
+        file: testFile,
+        line: 3,
+        column: 14,
+      });
+      if (highlight.error_code === "NOT_IMPLEMENTED") {
+        expect(highlight.strict_mode).toBe(true);
+      } else {
+        expect(Array.isArray(highlight.highlights)).toBe(true);
+      }
+    } finally {
+      if (fs.existsSync(testFile)) fs.unlinkSync(testFile);
+    }
+  }, 120000);
+
+  it("should support selection/folding/link/call hierarchy/code_action flow", async () => {
+    const testFile = path.join(WORKSPACE_ROOT, "src/components/__lsp_advanced_flow_test__.vue");
+    fs.writeFileSync(
+      testFile,
+      [
+        "<script setup lang=\"ts\">",
+        "import { computed } from 'vue'",
+        "const sharedName = 'x'",
+        "const upper = computed(() => sharedName.toUpperCase())",
+        "console.log(upper.value)",
+        "</script>",
+        "",
+      ].join("\n")
+    );
+    try {
+      await client.callTool("switch_workspace_for_language", { language: "vue", path: WORKSPACE_ROOT });
+
+      const selection = await client.callTool("selection_range", {
+        file: testFile,
+        line: 4,
+        column: 33,
+      });
+      if (selection.error_code === "NOT_IMPLEMENTED") {
+        expect(selection.strict_mode).toBe(true);
+      } else {
+        expect(Array.isArray(selection.ranges)).toBe(true);
+      }
+
+      const folding = await client.callTool("folding_range", {
+        file: testFile,
+      });
+      if (folding.error_code === "NOT_IMPLEMENTED") {
+        expect(folding.strict_mode).toBe(true);
+      } else {
+        expect(Array.isArray(folding.ranges)).toBe(true);
+      }
+
+      const links = await client.callTool("document_link", {
+        file: testFile,
+      });
+      if (links.error_code === "NOT_IMPLEMENTED") {
+        expect(links.strict_mode).toBe(true);
+      } else {
+        expect(Array.isArray(links.links)).toBe(true);
+      }
+
+      const calls = await client.callTool("call_hierarchy", {
+        file: testFile,
+        line: 4,
+        column: 33,
+        direction: "both",
+      });
+      if (calls.error_code === "NOT_IMPLEMENTED") {
+        expect(calls.strict_mode).toBe(true);
+      } else {
+        expect(String(calls.error || "")).not.toContain("Method not found");
+        if (!calls.error) {
+          expect(calls.direction).toBe("both");
+        }
+      }
+
+      const actions = await client.callTool("code_action", {
+        file: testFile,
+        line: 2,
+        column: 1,
+      });
+      if (actions.error_code === "NOT_IMPLEMENTED") {
+        expect(actions.strict_mode).toBe(true);
+      } else {
+        expect(Array.isArray(actions.actions)).toBe(true);
+        if (actions.actions.length > 0) {
+          const run = await client.callTool("run_code_action", {
+            file: testFile,
+            line: 2,
+            column: 1,
+            title: actions.actions[0].title,
+          });
+          if (run.error_code === "NOT_IMPLEMENTED") {
+            expect(run.strict_mode).toBe(true);
+          } else {
+            expect(run.success || run.error).toBeDefined();
+          }
+        }
+      }
+    } finally {
+      if (fs.existsSync(testFile)) fs.unlinkSync(testFile);
+    }
+  }, 120000);
 });
